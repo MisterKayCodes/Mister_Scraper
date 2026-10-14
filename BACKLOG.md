@@ -29,8 +29,10 @@
 - [ ] **⚡ Quick Grab Flow**:
   - Drop single X link -> cleans caption -> offers inline choice:
     `[ 👤 Send to Me Here ]` vs `[ 📢 Post to @MyChannel ]`.
-- [ ] **🚀 Auto-Sync Flow**:
-  - Track `@username` -> set interval (30m, 1h, 2h) -> background scheduler auto-posts clean content.
+- [ ] **🚀 Auto-Sync Flow (Pair Manager)**:
+  - Input parsing: Accepts `@username`, `https://x.com/username`, or `https://x.com/username/media`.
+  - Pair creation: Binds Source (X profile) ➔ Destination (Telegram channel) + Interval.
+  - Active Pairs List: View all linked pairs with inline `[ 🗑️ Remove ]` and status toggles.
 - [ ] **⚙️ Channel & Branding Flow**:
   - Set target channel (`@channel` or numeric ID), edit signature footer, toggle link-stripping ON/OFF.
 

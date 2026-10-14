@@ -84,3 +84,27 @@ class Repository:
         stmt = select(ScheduledSource).where(ScheduledSource.is_active == True)
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+    @staticmethod
+    async def get_user_sources(session: AsyncSession, user_id: int) -> List[ScheduledSource]:
+        stmt = select(ScheduledSource).where(ScheduledSource.user_id == user_id)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def toggle_source(session: AsyncSession, source_id: int, user_id: int) -> Optional[ScheduledSource]:
+        stmt = select(ScheduledSource).where(ScheduledSource.id == source_id, ScheduledSource.user_id == user_id)
+        result = await session.execute(stmt)
+        src = result.scalar_one_or_none()
+        if src:
+            src.is_active = not src.is_active
+            await session.commit()
+            await session.refresh(src)
+        return src
+
+    @staticmethod
+    async def delete_source(session: AsyncSession, source_id: int, user_id: int) -> bool:
+        stmt = delete(ScheduledSource).where(ScheduledSource.id == source_id, ScheduledSource.user_id == user_id)
+        result = await session.execute(stmt)
+        await session.commit()
+        return result.rowcount > 0

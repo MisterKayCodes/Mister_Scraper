@@ -46,5 +46,26 @@ def parse_media_list(data: Dict[str, Any]) -> List[Dict[str, str]]:
             "url": data["media_url"],
             "type": "video" if data.get("hasVideo") else "image"
         })
-        
     return media_list
+
+def extract_x_username(input_str: str) -> str:
+    """
+    Extracts the clean X username from various inputs:
+    - '@elonmusk' -> 'elonmusk'
+    - 'https://x.com/elonmusk' -> 'elonmusk'
+    - 'https://x.com/elonmusk/media' -> 'elonmusk'
+    - 'https://twitter.com/elonmusk' -> 'elonmusk'
+    - 'elonmusk' -> 'elonmusk'
+    """
+    cleaned = input_str.strip().rstrip("/")
+    # Strip URL schemes and domain
+    for prefix in ["https://x.com/", "http://x.com/", "https://twitter.com/", "http://twitter.com/"]:
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):]
+            break
+
+    # If it ends with /media, /status, etc., strip after the slash
+    parts = cleaned.split("/")
+    raw_user = parts[0].split("?")[0].strip()
+    return raw_user.lstrip("@")
+

@@ -5,10 +5,10 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 def get_main_reply_keyboard(has_channel: bool = False) -> ReplyKeyboardMarkup:
-    """Clean 3-button MVP menu layout."""
+    """Clean MVP menu layout with Active Sources."""
     kb = [
         [KeyboardButton(text="🚀 Auto-Sync Channel"), KeyboardButton(text="⚡ Quick Grab")],
-        [KeyboardButton(text="⚙️ Channel & Branding")]
+        [KeyboardButton(text="📋 Active Sources"), KeyboardButton(text="⚙️ Channel & Branding")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -41,3 +41,14 @@ def get_interval_selection_kb() -> InlineKeyboardMarkup:
     )
     builder.row(InlineKeyboardButton(text="❌ Cancel", callback_data="sync_cancel"))
     return builder.as_markup()
+
+def get_source_item_kb(source_id: int, is_active: bool) -> InlineKeyboardMarkup:
+    """Controls for a single linked source pair."""
+    builder = InlineKeyboardBuilder()
+    toggle_text = "⏸️ Pause" if is_active else "▶️ Resume"
+    builder.row(
+        InlineKeyboardButton(text=toggle_text, callback_data=f"src_toggle:{source_id}"),
+        InlineKeyboardButton(text="🗑️ Delete Pair", callback_data=f"src_del:{source_id}")
+    )
+    return builder.as_markup()
+
