@@ -17,14 +17,21 @@ class UserSetting(Base):
 
 
 class SeenItem(Base):
-    """Tracks seen post/tweet IDs to prevent duplicate downloads and reposts."""
+    """
+    Two-Stage State Machine for Scraped Items:
+    status='DISCOVERED' -> status='COMPLETED' (posted) or status='FAILED'
+    """
     __tablename__ = "seen_items"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    platform = Column(String(32), default="x", index=True)      # x, youtube, etc.
-    content_id = Column(String(128), nullable=False, index=True) # e.g. tweet_id or video_id
+    platform = Column(String(32), default="x", index=True)
+    content_id = Column(String(128), nullable=False, index=True) # tweet_id
     user_id = Column(BigInteger, nullable=False, index=True)
+    status = Column(String(32), default="DISCOVERED")            # DISCOVERED, COMPLETED, FAILED
+    retry_count = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class HarvestTask(Base):
@@ -33,7 +40,7 @@ class HarvestTask(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, nullable=False, index=True)
-    target = Column(String(128), nullable=False)                # e.g. @CryptoWhale
+    target = Column(String(128), nullable=False)
     platform = Column(String(32), default="x")
     status = Column(String(32), default="ACTIVE")               # ACTIVE, PAUSED, STOPPED, COMPLETED
     total_items = Column(Integer, default=0)
@@ -46,16 +53,19 @@ class HarvestTask(Base):
 
 
 class ScheduledSource(Base):
-    """Monitored accounts that the scheduler checks periodically."""
+    """Monitored accounts with diagnostics (Mister_Channels gold standard)."""
     __tablename__ = "scheduled_sources"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, nullable=False, index=True)
     platform = Column(String(32), default="x")
-    target = Column(String(128), nullable=False)                # e.g. @CryptoWhale
+    target = Column(String(128), nullable=False)                # e.g. DailyLoud
     destination_channel_id = Column(String(128), nullable=False)
-    interval_minutes = Column(Integer, default=60)
+    interval_minutes = Column(Integer, default=120)             # 30, 120, 360, 720, 1440
     is_active = Column(Boolean, default=True)
+    total_delivered = Column(Integer, default=0)
     last_check = Column(DateTime, nullable=True)
     next_check = Column(DateTime, nullable=True)
+    last_posted_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

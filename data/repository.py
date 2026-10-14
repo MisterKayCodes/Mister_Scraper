@@ -30,19 +30,78 @@ class Repository:
 
     @staticmethod
     async def is_duplicate(session: AsyncSession, user_id: int, platform: str, content_id: str) -> bool:
+        """True ONLY if the item has already been successfully COMPLETED (posted)."""
+        stmt = select(SeenItem).where(
+            SeenItem.user_id == user_id,
+            SeenItem.platform == platform,
+            SeenItem.content_id == str(content_id),
+            SeenItem.status == "COMPLETED"
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+    @staticmethod
+    async def mark_as_discovered(session: AsyncSession, user_id: int, platform: str, content_id: str) -> SeenItem:
         stmt = select(SeenItem).where(
             SeenItem.user_id == user_id,
             SeenItem.platform == platform,
             SeenItem.content_id == str(content_id)
         )
         result = await session.execute(stmt)
-        return result.scalar_one_or_none() is not None
+        item = result.scalar_one_or_none()
+        if not item:
+            item = SeenItem(user_id=user_id, platform=platform, content_id=str(content_id), status="DISCOVERED")
+            session.add(item)
+            await session.commit()
+            await session.refresh(item)
+        return item
 
     @staticmethod
-    async def mark_as_seen(session: AsyncSession, user_id: int, platform: str, content_id: str) -> None:
-        if not await Repository.is_duplicate(session, user_id, platform, content_id):
-            item = SeenItem(user_id=user_id, platform=platform, content_id=str(content_id))
+    async def mark_as_completed(session: AsyncSession, user_id: int, platform: str, content_id: str) -> None:
+        stmt = select(SeenItem).where(
+            SeenItem.user_id == user_id,
+            SeenItem.platform == platform,
+            SeenItem.content_id == str(content_id)
+        )
+        result = await session.execute(stmt)
+        item = result.scalar_one_or_none()
+        if item:
+            item.status = "COMPLETED"
+            item.error_message = None
+        else:
+            item = SeenItem(user_id=user_id, platform=platform, content_id=str(content_id), status="COMPLETED")
             session.add(item)
+        await session.commit()
+
+    @staticmethod
+    async def mark_as_failed(session: AsyncSession, user_id: int, platform: str, content_id: str, error_msg: str) -> None:
+        stmt = select(SeenItem).where(
+            SeenItem.user_id == user_id,
+            SeenItem.platform == platform,
+            SeenItem.content_id == str(content_id)
+        )
+        result = await session.execute(stmt)
+        item = result.scalar_one_or_none()
+        if item:
+            item.status = "FAILED"
+            item.retry_count = (item.retry_count or 0) + 1
+            item.error_message = error_msg
+        else:
+            item = SeenItem(user_id=user_id, platform=platform, content_id=str(content_id), status="FAILED", error_message=error_msg, retry_count=1)
+            session.add(item)
+        await session.commit()
+
+    @staticmethod
+    async def update_source_stats(session: AsyncSession, source_id: int, delivered_increment: int = 0, last_error: Optional[str] = None) -> None:
+        stmt = select(ScheduledSource).where(ScheduledSource.id == source_id)
+        result = await session.execute(stmt)
+        src = result.scalar_one_or_none()
+        if src:
+            if delivered_increment > 0:
+                src.total_delivered = (src.total_delivered or 0) + delivered_increment
+                src.last_posted_at = datetime.utcnow()
+            if last_error is not None:
+                src.last_error = last_error
             await session.commit()
 
     @staticmethod

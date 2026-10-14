@@ -13,9 +13,12 @@ from data.repository import Repository
 from features.x.adapter import XAdapter
 from .downloader import download_file
 
+from loguru import logger
+
 # Global Conveyor Belt Queue
 # Queue items: Tuple[tweet_url: str, user_id: int, task_id: int, destination_channel: str, custom_signature: str, filter_mode: int]
 conveyor_queue = asyncio.Queue()
+_is_first_post = True
 
 async def process_queue_item(bot: Bot, item: Tuple) -> None:
     """Processes a single media item from the conveyor belt."""
@@ -58,7 +61,10 @@ async def process_queue_item(bot: Bot, item: Tuple) -> None:
         # Download chunked
         success = await asyncio.to_thread(download_file, m_url, local_path)
         if not success:
-            print(f"[CONVEYOR] Failed to download media: {m_url}")
+            err_msg = f"Failed to download media: {m_url[:50]}"
+            logger.error(f"[CONVEYOR] {err_msg}")
+            async with AsyncSessionLocal() as session:
+                await Repository.mark_as_failed(session, user_id, "x", tweet_id, err_msg)
             continue
 
         # Upload to target channel
@@ -81,16 +87,22 @@ async def process_queue_item(bot: Bot, item: Tuple) -> None:
                     request_timeout=60
                 )
 
-            # Mark as seen in The Vault
+            # Mark as COMPLETED in The Vault (Guaranteed State)
             async with AsyncSessionLocal() as session:
-                await Repository.mark_as_seen(session, user_id, "x", tweet_id)
+                await Repository.mark_as_completed(session, user_id, "x", tweet_id)
+                # If tied to a scheduled source, update its delivery stats
                 if task_id:
-                    await Repository.update_task(session, task_id, processed_count=1, success_count=1)
+                    await Repository.update_source_stats(session, source_id=task_id, delivered_increment=1, last_error="None (Healthy)")
 
-            print(f"[CONVEYOR] Successfully posted {tweet_id} to {destination_channel}")
+            logger.info(f"[CONVEYOR] Successfully delivered {tweet_id} to {destination_channel}")
 
         except Exception as e:
-            print(f"[CONVEYOR] Error posting to {destination_channel}: {e}")
+            err_msg = f"Telegram upload error: {str(e)[:100]}"
+            logger.error(f"[CONVEYOR] Error posting to {destination_channel}: {err_msg}")
+            async with AsyncSessionLocal() as session:
+                await Repository.mark_as_failed(session, user_id, "x", tweet_id, err_msg)
+                if task_id:
+                    await Repository.update_source_stats(session, source_id=task_id, last_error=err_msg)
         finally:
             if local_path.exists():
                 try:
@@ -100,15 +112,24 @@ async def process_queue_item(bot: Bot, item: Tuple) -> None:
 
 async def conveyor_worker(bot: Bot) -> None:
     """Continuous background worker with human anti-ban jitter."""
-    print("[CONVEYOR] Background worker started.")
+    global _is_first_post
+    logger.info("[CONVEYOR] Background worker started.")
     while True:
         item = await conveyor_queue.get()
         try:
-            # Jitter pacing: 30-90 seconds to mimic human cadence
-            jitter = random.uniform(30.0, 90.0)
+            # First item in batch: 1-5s for instant feedback
+            # Subsequent items: 45-90s to protect Telegram channel
+            if _is_first_post:
+                jitter = random.uniform(1.0, 5.0)
+                _is_first_post = False
+            else:
+                jitter = random.uniform(45.0, 90.0)
+
+            logger.info(f"[CONVEYOR] Pacing next item. Sleeping for {jitter:.1f}s jitter...")
             await asyncio.sleep(jitter)
             await process_queue_item(bot, item)
         except Exception as e:
-            print(f"[CONVEYOR] Worker error: {e}")
+            logger.error(f"[CONVEYOR] Worker error: {e}")
         finally:
             conveyor_queue.task_done()
+

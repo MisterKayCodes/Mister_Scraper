@@ -2,8 +2,10 @@ from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from loguru import logger
 
+from sqlalchemy import select
 from data.database import AsyncSessionLocal
 from data.repository import Repository
+from data.models import ScheduledSource
 from bot.states import SyncStates
 from core.media_resolver import extract_x_username
 from bot.keyboards import get_interval_selection_kb, get_source_item_kb
@@ -93,6 +95,48 @@ async def cb_cancel_sync(callback: types.CallbackQuery, state: FSMContext):
 
 # ----------------- Active Sources / Pair Manager -----------------
 
+from datetime import datetime
+
+def format_source_diagnostic_card(src) -> str:
+    """Renders the Mister_Channels gold-standard diagnostic feed card."""
+    status = "ACTIVE ✅" if src.is_active else "PAUSED ⏸️"
+    
+    # Calculate countdown
+    countdown_str = "Calculating..."
+    if src.next_check:
+        now = datetime.utcnow()
+        if src.next_check > now:
+            diff = src.next_check - now
+            mins = int(diff.total_seconds() // 60)
+            if mins > 60:
+                countdown_str = f"In {mins // 60}h {mins % 60}m"
+            else:
+                countdown_str = f"In {mins} minutes"
+        else:
+            countdown_str = "Checking soon ⏳"
+
+    # Format interval nicely
+    interval_display = f"{src.interval_minutes} mins"
+    if src.interval_minutes >= 60:
+        hrs = src.interval_minutes / 60
+        interval_display = f"{int(hrs) if hrs.is_integer() else hrs} hours"
+
+    error_display = f"<code>{src.last_error}</code>" if src.last_error and src.last_error != "None (Healthy)" else "None (Healthy) 🟢"
+
+    card = (
+        f"🔁 <b>Scraper Feed: @{src.target} ➔ {src.destination_channel_id}</b>\n"
+        "───────────────────────────\n"
+        f"⚡ <b>Status:</b> {status}\n"
+        f"🔗 <b>Source:</b> <code>x.com/{src.target}</code>\n"
+        f"📢 <b>Destination:</b> <code>{src.destination_channel_id}</code>\n"
+        f"⏱️ <b>Interval:</b> Every {interval_display}\n"
+        f"⏳ <b>Next Check:</b> {countdown_str}\n"
+        f"📦 <b>Delivered:</b> {src.total_delivered or 0} items\n"
+        f"⚠️ <b>Last Error:</b> {error_display}\n"
+        "───────────────────────────"
+    )
+    return card
+
 @router.message(F.text == "📋 Active Sources")
 async def btn_active_sources(message: types.Message):
     async with AsyncSessionLocal() as session:
@@ -110,14 +154,7 @@ async def btn_active_sources(message: types.Message):
     await message.answer(f"📋 <b>Your Active Sources ({len(sources)}):</b>\nManage your cloning pipelines below:", parse_mode="HTML")
 
     for src in sources:
-        status_text = "🟢 Active" if src.is_active else "⏸️ Paused"
-        card = (
-            f"🔗 <b>Source:</b> <code>x.com/{src.target}</code>\n"
-            f"📢 <b>Destination:</b> <code>{src.destination_channel_id}</code>\n"
-            f"⏱️ <b>Check Interval:</b> Every {src.interval_minutes}m\n"
-            f"⚡ <b>Status:</b> {status_text}"
-        )
-        await message.answer(card, reply_markup=get_source_item_kb(src.id, src.is_active), parse_mode="HTML")
+        await message.answer(format_source_diagnostic_card(src), reply_markup=get_source_item_kb(src.id, src.is_active), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("src_toggle:"))
 async def cb_toggle_source(callback: types.CallbackQuery):
@@ -130,16 +167,52 @@ async def cb_toggle_source(callback: types.CallbackQuery):
         return
 
     status_label = "Resumed ▶️" if src.is_active else "Paused ⏸️"
-    await callback.answer(f"Source @{src.target} is now {status_label}")
-    # Update message card
-    status_text = "🟢 Active" if src.is_active else "⏸️ Paused"
-    card = (
-        f"🔗 <b>Source:</b> <code>x.com/{src.target}</code>\n"
-        f"📢 <b>Destination:</b> <code>{src.destination_channel_id}</code>\n"
-        f"⏱️ <b>Check Interval:</b> Every {src.interval_minutes}m\n"
-        f"⚡ <b>Status:</b> {status_text}"
-    )
-    await callback.message.edit_text(card, reply_markup=get_source_item_kb(src.id, src.is_active), parse_mode="HTML")
+    await callback.answer(f"Feed @{src.target} is now {status_label}")
+    await callback.message.edit_text(format_source_diagnostic_card(src), reply_markup=get_source_item_kb(src.id, src.is_active), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("src_check:"))
+async def cb_check_source_now(callback: types.CallbackQuery):
+    source_id = int(callback.data.split(":")[1])
+    await callback.answer("⏳ Radar scanning @target now...")
+
+    async with AsyncSessionLocal() as session:
+        stmt = select(ScheduledSource).where(ScheduledSource.id == source_id, ScheduledSource.user_id == callback.from_user.id)
+        res = await session.execute(stmt)
+        src = res.scalar_one_or_none()
+
+    if not src:
+        await callback.answer("Source not found.", show_alert=True)
+        return
+
+    # Trigger scan immediately
+    from features.x.adapter import XAdapter
+    from services.queue_worker import conveyor_queue
+
+    try:
+        links = await XAdapter.get_profile_posts(src.target, limit=5)
+        new_count = 0
+        async with AsyncSessionLocal() as session:
+            settings = await Repository.get_or_create_settings(session, callback.from_user.id)
+            sig = settings.custom_signature or ""
+            f_mode = settings.filter_mode if settings.filter_mode is not None else 1
+
+            for link in links:
+                tid = link.split("?")[0].rstrip("/").split("/")[-1]
+                if not await Repository.is_duplicate(session, src.user_id, "x", tid):
+                    await Repository.mark_as_discovered(session, src.user_id, "x", tid)
+                    await conveyor_queue.put((link, src.user_id, src.id, src.destination_channel_id, sig, f_mode))
+                    new_count += 1
+
+        await callback.answer(f"✅ Found {new_count} new posts! Queued for delivery.")
+        # Reload card
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(stmt)
+            src = res.scalar_one_or_none()
+            if src:
+                await callback.message.edit_text(format_source_diagnostic_card(src), reply_markup=get_source_item_kb(src.id, src.is_active), parse_mode="HTML")
+
+    except Exception as e:
+        await callback.answer(f"❌ Scan failed: {str(e)[:50]}", show_alert=True)
 
 @router.callback_query(F.data.startswith("src_del:"))
 async def cb_delete_source(callback: types.CallbackQuery):
@@ -148,8 +221,8 @@ async def cb_delete_source(callback: types.CallbackQuery):
         deleted = await Repository.delete_source(session, source_id, callback.from_user.id)
 
     if deleted:
-        await callback.answer("🗑️ Pair deleted successfully.")
-        await callback.message.edit_text("🗑️ <i>This cloning pair was removed.</i>", parse_mode="HTML")
+        await callback.answer("🗑️ Source unlinked.")
+        await callback.message.edit_text("🗑️ <i>This scraper feed was unlinked.</i>", parse_mode="HTML")
     else:
         await callback.answer("Could not delete source.", show_alert=True)
 

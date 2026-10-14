@@ -32,23 +32,28 @@ def get_branding_inline_kb(filter_mode: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 def get_interval_selection_kb() -> InlineKeyboardMarkup:
-    """Interval selector for Auto-Sync."""
+    """Extended Interval selector for Auto-Sync."""
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="⏱️ Every 30m", callback_data="sync_int:30"),
-        InlineKeyboardButton(text="⏱️ Every 1h", callback_data="sync_int:60"),
-        InlineKeyboardButton(text="⏱️ Every 2h", callback_data="sync_int:120")
+        InlineKeyboardButton(text="⏱️ 30m", callback_data="sync_int:30"),
+        InlineKeyboardButton(text="⏱️ 2h", callback_data="sync_int:120"),
+        InlineKeyboardButton(text="⏱️ 6h", callback_data="sync_int:360")
+    )
+    builder.row(
+        InlineKeyboardButton(text="⏱️ 12h", callback_data="sync_int:720"),
+        InlineKeyboardButton(text="⏱️ 24h (Daily)", callback_data="sync_int:1440")
     )
     builder.row(InlineKeyboardButton(text="❌ Cancel", callback_data="sync_cancel"))
     return builder.as_markup()
 
 def get_source_item_kb(source_id: int, is_active: bool) -> InlineKeyboardMarkup:
-    """Controls for a single linked source pair."""
+    """Controls for a single linked source pair with instant Check Now trigger."""
     builder = InlineKeyboardBuilder()
-    toggle_text = "⏸️ Pause" if is_active else "▶️ Resume"
+    toggle_text = "⏸️ Pause Feed" if is_active else "▶️ Resume Feed"
     builder.row(
         InlineKeyboardButton(text=toggle_text, callback_data=f"src_toggle:{source_id}"),
-        InlineKeyboardButton(text="🗑️ Delete Pair", callback_data=f"src_del:{source_id}")
+        InlineKeyboardButton(text="🔄 Check Now", callback_data=f"src_check:{source_id}")
     )
+    builder.row(InlineKeyboardButton(text="🗑️ Unlink Source", callback_data=f"src_del:{source_id}"))
     return builder.as_markup()
 

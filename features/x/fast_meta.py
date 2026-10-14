@@ -13,10 +13,13 @@ def fetch_tweet_metadata(url: str) -> Tuple[Optional[Dict[str, Any]], Optional[s
     api_url = api_url.replace("https://twitter.com", config.VX_TWITTER_API)
     api_url = api_url.split("?")[0].rstrip("/")
 
+    # vxtwitter blocks standard browser User-Agents with 403, but accepts TelegramBot / curl
+    api_headers = {"User-Agent": "TelegramBot (like TwitterBot)"}
+
     try:
         response = requests.get(
             api_url,
-            headers=config.DEFAULT_HEADERS,
+            headers=api_headers,
             timeout=15,
             verify=True
         )
