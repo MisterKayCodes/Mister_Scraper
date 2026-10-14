@@ -3,6 +3,7 @@ import html
 from pathlib import Path
 from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
+from loguru import logger
 
 import config
 from core.text_cleaner import MessageCleaner
@@ -27,10 +28,11 @@ async def btn_quick_grab(message: types.Message, state: FSMContext):
     )
 
 @router.message(QuickGrabStates.waiting_for_link)
-@router.message(F.text.contains("x.com") | F.text.contains("twitter.com"))
+@router.message((F.text.contains("x.com/") | F.text.contains("twitter.com/")) & F.text.contains("/status/"))
 async def process_x_link(message: types.Message, state: FSMContext):
     await state.clear()
     url = message.text.strip()
+    logger.info(f"[QUICK_GRAB] Received post link from User {message.from_user.id}: {url}")
     status_msg = await message.answer("🔍 <i>Fetching X content...</i>", parse_mode="HTML")
 
     # Fetch using XAdapter

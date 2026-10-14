@@ -1,5 +1,6 @@
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
+from loguru import logger
 
 from data.database import AsyncSessionLocal
 from data.repository import Repository
@@ -25,6 +26,7 @@ async def btn_auto_sync(message: types.Message, state: FSMContext):
         return
 
     await state.set_state(SyncStates.waiting_for_target)
+    logger.info(f"[SYNC] User {message.from_user.id} initiated Auto-Sync setup.")
     await message.answer(
         "🚀 <b>Auto-Sync Setup (Link X Profile)</b>\n\n"
         "Send the X (Twitter) profile you want to clone:\n"
@@ -36,6 +38,7 @@ async def btn_auto_sync(message: types.Message, state: FSMContext):
 async def process_target_username(message: types.Message, state: FSMContext):
     raw_input = message.text.strip()
     target = extract_x_username(raw_input)
+    logger.info(f"[SYNC] User {message.from_user.id} submitted target raw='{raw_input}' parsed='{target}'")
 
     if not target:
         await message.answer("❌ Could not parse username. Please send a valid X profile link or @username:")

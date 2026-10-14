@@ -4,6 +4,8 @@ import uvicorn
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from loguru import logger
+import sys
 
 import config
 from data.database import init_db
@@ -12,8 +14,13 @@ from services.queue_worker import conveyor_worker
 from services.scheduler import run_scheduler_loop
 from api import create_app
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-logger = logging.getLogger("mister_scraper")
+# Configure Loguru output
+logger.remove()
+logger.add(
+    sys.stdout,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
+    colorize=True
+)
 
 async def run_fastapi(app):
     """Runs uvicorn web server in async loop."""
