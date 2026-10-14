@@ -145,6 +145,7 @@ async def repost_to_channel_from_vault(
                 chat_id=channel_id,
                 video=item.telegram_file_id,
                 caption=item.clean_caption or "",
+                supports_streaming=True,
                 parse_mode="HTML"
             )
         else:

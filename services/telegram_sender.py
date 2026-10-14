@@ -50,7 +50,7 @@ async def send_media_resilient(
                 chat_id=target_chat,
                 video=media_url,
                 caption=caption,
-                thumbnail=thumb_input,
+                supports_streaming=True,
                 parse_mode="HTML",
                 request_timeout=90
             )
@@ -113,21 +113,25 @@ async def send_media_resilient(
     # Calculate dynamic timeout based on file size (minimum 600s, + 25s per MB)
     file_size_mb = local_path.stat().st_size / (1024 * 1024)
     dynamic_timeout = max(600, int(file_size_mb * 25))
-    # Download thumbnail locally if provided (Twitter blocks Telegram from fetching thumbnail URLs directly)
+    # Download and scale thumbnail locally (Telegram strictly requires max 320x320 pixels JPEG)
     thumb_path = None
     thumb_input = None
     if is_video and thumbnail_url:
         try:
             thumb_path = download_dir / f"thumb_{timestamp}.jpg"
             import requests
+            from PIL import Image
+            from io import BytesIO
+
             r_thumb = await asyncio.to_thread(requests.get, thumbnail_url, timeout=10)
             if r_thumb.status_code == 200:
-                with open(thumb_path, "wb") as f_thumb:
-                    f_thumb.write(r_thumb.content)
+                img = Image.open(BytesIO(r_thumb.content)).convert("RGB")
+                img.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                img.save(thumb_path, "JPEG", quality=85)
                 thumb_input = types.FSInputFile(str(thumb_path))
-                logger.info(f"[SENDER] Downloaded thumbnail ({len(r_thumb.content)} bytes) for video")
+                logger.info(f"[SENDER] Scaled thumbnail to {img.size} ({thumb_path.stat().st_size} bytes) for video")
         except Exception as thumb_err:
-            logger.warning(f"[SENDER] Failed to download thumbnail: {thumb_err}")
+            logger.warning(f"[SENDER] Failed to prepare thumbnail: {thumb_err}")
 
     for attempt in range(1, max_retries + 1):
         upload_tracker = TelegramProgressTracker(status_msg, action_title="Uploading to Telegram (720p HD)") if status_msg else None
@@ -141,6 +145,7 @@ async def send_media_resilient(
                     video=file_input,
                     caption=caption,
                     thumbnail=thumb_input,
+                    supports_streaming=True,
                     parse_mode="HTML",
                     request_timeout=dynamic_timeout
                 )
