@@ -1,3 +1,3 @@
-from .progress import TelegramProgressTracker
+from .progress import TelegramProgressTracker, ProgressFSInputFile
 
-__all__ = ["TelegramProgressTracker"]
+__all__ = ["TelegramProgressTracker", "ProgressFSInputFile"]

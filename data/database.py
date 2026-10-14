@@ -37,5 +37,7 @@ async def init_db():
                 connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN media_type VARCHAR(32) DEFAULT 'video'")
             if "clean_caption" not in seen_cols:
                 connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN clean_caption TEXT NULL")
+            if "updated_at" not in seen_cols:
+                connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN updated_at TIMESTAMP NULL")
 
         await conn.run_sync(run_migrations)

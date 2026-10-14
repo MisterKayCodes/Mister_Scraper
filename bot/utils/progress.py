@@ -60,3 +60,39 @@ class TelegramProgressTracker:
                 await self.status_message.edit_text(text, parse_mode="HTML")
             except Exception:
                 pass  # Ignore Telegram MessageNotModified or transient edit hiccups
+
+
+from pathlib import Path
+from typing import AsyncGenerator
+from aiogram.types import FSInputFile
+from aiogram import Bot
+
+class ProgressFSInputFile(FSInputFile):
+    """
+    Build Once, Reuse Forever:
+    An FSInputFile that reports chunks uploaded to Telegram Bot API.
+    Wires directly into TelegramProgressTracker for real-time upload progress bars.
+    """
+    def __init__(
+        self,
+        path: str | Path,
+        tracker: Optional[TelegramProgressTracker] = None,
+        filename: Optional[str] = None,
+        chunk_size: int = 64 * 1024
+    ):
+        super().__init__(path=path, filename=filename, chunk_size=chunk_size)
+        self.tracker = tracker
+        self.file_path = Path(path)
+        self.total_size = self.file_path.stat().st_size if self.file_path.exists() else 0
+        self.uploaded_bytes = 0
+
+    async def read(self, bot: Bot) -> AsyncGenerator[bytes, None]:
+        async for chunk in super().read(bot):
+            yield chunk
+            self.uploaded_bytes += len(chunk)
+            if self.tracker and self.total_size > 0:
+                try:
+                    await self.tracker.update(self.uploaded_bytes, self.total_size)
+                except Exception:
+                    pass
+

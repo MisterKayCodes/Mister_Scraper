@@ -61,7 +61,8 @@ async def process_queue_item(bot: Bot, item: Tuple) -> None:
             target_chat=destination_channel,
             media_url=m_url,
             media_type=m_type,
-            caption=safe_caption
+            caption=safe_caption,
+            thumbnail_url=media.get("thumbnail_url")
         )
 
         if success:

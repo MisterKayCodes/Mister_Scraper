@@ -8,7 +8,8 @@ from loguru import logger
 import config
 from core.media_resolver import resolve_extension
 from services.downloader import download_file
-from bot.utils.progress import TelegramProgressTracker
+from services.downloader import download_file
+from bot.utils.progress import TelegramProgressTracker, ProgressFSInputFile
 
 
 async def send_media_resilient(
@@ -18,17 +19,19 @@ async def send_media_resilient(
     media_type: str,
     caption: str,
     status_msg: Optional[types.Message] = None,
+    thumbnail_url: Optional[str] = None,
     max_retries: int = 2
-) -> bool:
+) -> str | bool:
     """
     The Carrier (Resilient Sender):
     Build Once, Reuse Forever.
 
     Tier 1: Attempts instant Telegram Cloud-to-Cloud transfer via direct URL (0 bytes local upload, ~2s delivery).
     Tier 2: If Telegram rejects direct URL, downloads chunked with live progress bar and executes
-            resilient local file upload with dynamic timeout and retry backoff.
+            resilient local file upload with dynamic timeout, live upload percentage tracking, and video thumbnail.
     """
     is_video = "video" in media_type.lower() or media_url.endswith(".mp4")
+    thumb_input = types.URLInputFile(thumbnail_url) if (is_video and thumbnail_url) else None
 
     # -------------------------------------------------------------
     # TIER 1: Direct Cloud-to-Cloud Transfer (Telegram downloads URL)
@@ -47,6 +50,7 @@ async def send_media_resilient(
                 chat_id=target_chat,
                 video=media_url,
                 caption=caption,
+                thumbnail=thumb_input,
                 parse_mode="HTML",
                 request_timeout=90
             )
@@ -72,7 +76,7 @@ async def send_media_resilient(
         logger.warning(f"[SENDER] Tier 1 Cloud transfer failed ({tier1_err}). Dropping to Tier 2 Local Upload...")
 
     # -------------------------------------------------------------
-    # TIER 2: Local Atomic Download + Multi-part Upload with Retries
+    # TIER 2: Local Atomic Download + Multi-part Upload with Retries & Live Progress
     # -------------------------------------------------------------
     download_dir = Path(config.DOWNLOAD_DIR)
     download_dir.mkdir(exist_ok=True)
@@ -81,15 +85,15 @@ async def send_media_resilient(
     local_path = download_dir / f"send_{timestamp}.{ext}"
 
     loop = asyncio.get_running_loop()
-    tracker = TelegramProgressTracker(status_msg, action_title="Downloading Media") if status_msg else None
+    dl_tracker = TelegramProgressTracker(status_msg, action_title="Downloading from X") if status_msg else None
 
     def sync_progress_bridge(downloaded: int, total: int):
-        if tracker:
-            asyncio.run_coroutine_threadsafe(tracker.update(downloaded, total), loop)
+        if dl_tracker:
+            asyncio.run_coroutine_threadsafe(dl_tracker.update(downloaded, total), loop)
 
     if status_msg:
         try:
-            await status_msg.edit_text("⏳ <i>Downloading media to server...</i>", parse_mode="HTML")
+            await status_msg.edit_text("⏳ <i>Downloading 720p media from X...</i>", parse_mode="HTML")
         except Exception:
             pass
 
@@ -112,21 +116,17 @@ async def send_media_resilient(
     logger.info(f"[SENDER] Local file ready: {file_size_mb:.1f} MB. Allocated upload timeout: {dynamic_timeout}s")
 
     for attempt in range(1, max_retries + 1):
-        if status_msg:
-            try:
-                attempt_str = f" (Attempt {attempt}/{max_retries})" if attempt > 1 else ""
-                await status_msg.edit_text(f"📤 <i>Uploading media to Telegram{attempt_str}...</i>", parse_mode="HTML")
-            except Exception:
-                pass
-
+        upload_tracker = TelegramProgressTracker(status_msg, action_title="Uploading to Telegram (720p HD)") if status_msg else None
+        
         try:
-            file_input = types.FSInputFile(str(local_path))
+            file_input = ProgressFSInputFile(local_path, tracker=upload_tracker)
             sent_msg = None
             if is_video:
                 sent_msg = await bot.send_video(
                     chat_id=target_chat,
                     video=file_input,
                     caption=caption,
+                    thumbnail=thumb_input,
                     parse_mode="HTML",
                     request_timeout=dynamic_timeout
                 )
