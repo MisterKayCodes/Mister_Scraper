@@ -69,3 +69,22 @@ def extract_x_username(input_str: str) -> str:
     raw_user = parts[0].split("?")[0].strip()
     return raw_user.lstrip("@")
 
+
+def extract_status_urls(text: str) -> List[str]:
+    """
+    Extracts all valid X / Twitter status URLs from a string.
+    Works for single links or multiline/bulk text drops.
+    Deduplicates while preserving order.
+    """
+    pattern = r'https?://(?:(?:www\.)?x\.com|(?:www\.)?twitter\.com)/[A-Za-z0-9_]+/status/\d+'
+    raw_matches = re.findall(pattern, text)
+    
+    seen = set()
+    cleaned = []
+    for m in raw_matches:
+        base = m.split("?")[0].rstrip("/")
+        if base not in seen:
+            seen.add(base)
+            cleaned.append(base)
+    return cleaned
+

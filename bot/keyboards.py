@@ -57,3 +57,21 @@ def get_source_item_kb(source_id: int, is_active: bool) -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="🗑️ Unlink Source", callback_data=f"src_del:{source_id}"))
     return builder.as_markup()
 
+def get_delivery_action_deck_kb(author: str = "", can_repost: bool = False, url: str = "") -> InlineKeyboardMarkup:
+    """Action deck attached to successful deliveries for instant, frictionless follow-up."""
+    builder = InlineKeyboardBuilder()
+    
+    # Primary CTA: Grab another link
+    builder.row(InlineKeyboardButton(text="⚡ Grab Another Link", callback_data="qg_next"))
+    
+    secondary_row = []
+    if can_repost and url:
+        secondary_row.append(InlineKeyboardButton(text="📢 Post to Channel", callback_data="qg_post_channel"))
+    if author:
+        secondary_row.append(InlineKeyboardButton(text=f"🔄 Auto-Sync @{author}", callback_data=f"qg_sync_author:{author}"))
+        
+    if secondary_row:
+        builder.row(*secondary_row)
+        
+    return builder.as_markup()
+
