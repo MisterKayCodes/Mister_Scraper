@@ -1,6 +1,6 @@
 import asyncio
 import html
-from typing import Optional
+from typing import Optional, Dict
 from pathlib import Path
 from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
@@ -11,12 +11,16 @@ from core.text_cleaner import MessageCleaner
 from core.media_resolver import sanitize_filename, resolve_extension
 from data.database import AsyncSessionLocal
 from data.repository import Repository
-from features.x.adapter import XAdapter
+from features.x.adapter import XAdapter, ScrapedItem
 from services.downloader import download_file
 from bot.states import QuickGrabStates
 from bot.keyboards import get_quick_grab_choice_kb
+from bot.utils.progress import TelegramProgressTracker
 
 router = Router(name="quick_grab_router")
+
+# Cache to avoid re-requesting vxtwitter twice
+_scraped_cache: Dict[tuple, ScrapedItem] = {}
 
 @router.message(F.text == "⚡ Quick Grab")
 async def btn_quick_grab(message: types.Message, state: FSMContext):
@@ -39,8 +43,12 @@ async def process_x_link(message: types.Message, state: FSMContext):
     # Fetch using XAdapter
     scraped = await asyncio.to_thread(XAdapter.get_single_post, url)
     if not scraped or not scraped.media_list:
+        logger.warning(f"[QUICK_GRAB] No media found for {url}")
         await status_msg.edit_text("❌ <b>No media found</b> in this post (or link is private/deleted).", parse_mode="HTML")
         return
+
+    # Cache metadata for immediate delivery reuse
+    _scraped_cache[(message.from_user.id, url)] = scraped
 
     # Fetch user branding settings
     async with AsyncSessionLocal() as session:
@@ -73,9 +81,22 @@ async def cb_send_to_me(callback: types.CallbackQuery, state: FSMContext, bot: B
         await callback.answer("Session expired. Please paste the link again.", show_alert=True)
         return
 
-    await callback.message.edit_text("⏳ <i>Downloading and delivering to your chat...</i>", parse_mode="HTML")
-    await deliver_media(bot, callback.from_user.id, url, data.get("caption", ""), status_msg=callback.message)
     await callback.answer()
+    await callback.message.edit_text("⏳ <i>Downloading and delivering to your chat...</i>", parse_mode="HTML")
+    
+    cached_scraped = _scraped_cache.pop((callback.from_user.id, url), None)
+    success = await deliver_media(bot, callback.from_user.id, url, data.get("caption", ""), status_msg=callback.message, scraped=cached_scraped)
+
+    if success:
+        try:
+            await callback.message.edit_text("✅ <b>Delivered!</b> Enjoy your media.", parse_mode="HTML")
+        except Exception:
+            pass
+    else:
+        try:
+            await callback.message.edit_text("❌ <b>Delivery failed.</b> Could not deliver media to chat.", parse_mode="HTML")
+        except Exception:
+            pass
 
 @router.callback_query(F.data == "qg_post_channel")
 async def cb_post_to_channel(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
@@ -92,19 +113,30 @@ async def cb_post_to_channel(callback: types.CallbackQuery, state: FSMContext, b
         await callback.answer("Session expired. Please paste the link again.", show_alert=True)
         return
 
-    success = await deliver_media(bot, settings.destination_channel_id, url, data.get("caption", ""), status_msg=callback.message)
+    await callback.answer()
+    await callback.message.edit_text(f"⏳ <i>Posting to channel {settings.destination_channel_id}...</i>", parse_mode="HTML")
+    
+    cached_scraped = _scraped_cache.pop((callback.from_user.id, url), None)
+    success = await deliver_media(bot, settings.destination_channel_id, url, data.get("caption", ""), status_msg=callback.message, scraped=cached_scraped)
     if success:
         await callback.message.edit_text(f"✅ <b>Successfully posted</b> to <code>{settings.destination_channel_id}</code>!", parse_mode="HTML")
     else:
         await callback.message.edit_text(f"❌ <b>Delivery failed.</b> Make sure the bot is an Admin in <code>{settings.destination_channel_id}</code>.", parse_mode="HTML")
-    await callback.answer()
 
-from bot.utils.progress import TelegramProgressTracker
-
-async def deliver_media(bot: Bot, target_chat: any, url: str, caption: str, status_msg: Optional[types.Message] = None) -> bool:
+async def deliver_media(
+    bot: Bot,
+    target_chat: any,
+    url: str,
+    caption: str,
+    status_msg: Optional[types.Message] = None,
+    scraped: Optional[ScrapedItem] = None
+) -> bool:
     """Delivers media directly to user DM or channel with real-time throttled progress."""
-    scraped = await asyncio.to_thread(XAdapter.get_single_post, url)
+    if not scraped:
+        scraped = await asyncio.to_thread(XAdapter.get_single_post, url)
+    
     if not scraped or not scraped.media_list:
+        logger.error(f"[DELIVER] Failed to retrieve media list for {url}")
         return False
 
     download_dir = Path(config.DOWNLOAD_DIR)
@@ -136,24 +168,31 @@ async def deliver_media(bot: Bot, target_chat: any, url: str, caption: str, stat
             sync_progress_bridge
         )
 
-        if download_ok:
-            if status_msg:
+        if not download_ok:
+            logger.error(f"[DELIVER] Download file failed for {m_url}")
+            continue
+
+        if status_msg:
+            try:
+                await status_msg.edit_text("📤 <i>Uploading media to chat...</i>", parse_mode="HTML")
+            except Exception:
+                pass
+
+        try:
+            file_input = types.FSInputFile(str(local_path))
+            if "video" in m_type.lower() or ext == "mp4":
+                logger.info(f"[DELIVER] Sending video ({local_path}) to {target_chat}...")
+                await bot.send_video(target_chat, video=file_input, caption=safe_caption, parse_mode="HTML", request_timeout=300)
+            else:
+                logger.info(f"[DELIVER] Sending photo ({local_path}) to {target_chat}...")
+                await bot.send_photo(target_chat, photo=file_input, caption=safe_caption, parse_mode="HTML", request_timeout=60)
+            success = True
+        except Exception as e:
+            logger.error(f"[QUICK_GRAB] Telegram send error to {target_chat}: {e}")
+        finally:
+            if local_path.exists():
                 try:
-                    await status_msg.edit_text("📤 <i>Delivering media to chat...</i>", parse_mode="HTML")
+                    local_path.unlink()
                 except Exception:
                     pass
-
-            try:
-                file_input = types.FSInputFile(str(local_path))
-                if "video" in m_type.lower() or ext == "mp4":
-                    await bot.send_video(target_chat, video=file_input, caption=safe_caption, parse_mode="HTML")
-                else:
-                    await bot.send_photo(target_chat, photo=file_input, caption=safe_caption, parse_mode="HTML")
-                success = True
-            except Exception as e:
-                logger.error(f"[QUICK_GRAB] Send error: {e}")
-            finally:
-                if local_path.exists():
-                    try: local_path.unlink()
-                    except: pass
     return success

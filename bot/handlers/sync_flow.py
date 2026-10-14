@@ -174,7 +174,7 @@ async def cb_toggle_source(callback: types.CallbackQuery):
 @router.callback_query(F.data.startswith("src_check:"))
 async def cb_check_source_now(callback: types.CallbackQuery):
     source_id = int(callback.data.split(":")[1])
-    await callback.answer("⏳ Scanning now...")  # Only ONE answer per callback query
+    await callback.answer("⏳ Triggered radar scan...")
 
     async with AsyncSessionLocal() as session:
         stmt = select(ScheduledSource).where(ScheduledSource.id == source_id, ScheduledSource.user_id == callback.from_user.id)
@@ -184,6 +184,12 @@ async def cb_check_source_now(callback: types.CallbackQuery):
     if not src:
         await callback.message.reply("❌ Source not found.")
         return
+
+    # Visual in-message feedback while scanning
+    await callback.message.edit_text(
+        format_source_diagnostic_card(src) + f"\n\n🔍 <i>Scanning @{src.target} for new posts via stealth radar...</i>",
+        parse_mode="HTML"
+    )
 
     # Trigger scan immediately
     from features.x.adapter import XAdapter
@@ -209,7 +215,7 @@ async def cb_check_source_now(callback: types.CallbackQuery):
             res = await session.execute(stmt)
             src = res.scalar_one_or_none()
             if src:
-                result_note = f"\n\n✅ <b>Manual check done:</b> {new_count} new post(s) queued."
+                result_note = f"\n\n✅ <b>Radar Scan Complete:</b> Found {len(links)} posts, queued <b>{new_count} new</b> for delivery!"
                 await callback.message.edit_text(
                     format_source_diagnostic_card(src) + result_note,
                     reply_markup=get_source_item_kb(src.id, src.is_active),
@@ -217,7 +223,12 @@ async def cb_check_source_now(callback: types.CallbackQuery):
                 )
 
     except Exception as e:
-        await callback.message.reply(f"❌ Scan failed: {str(e)[:100]}")
+        logger.error(f"[CHECK_NOW] Error scanning @{src.target}: {e}")
+        await callback.message.edit_text(
+            format_source_diagnostic_card(src) + f"\n\n❌ <b>Scan Error:</b> <code>{str(e)[:100]}</code>",
+            reply_markup=get_source_item_kb(src.id, src.is_active),
+            parse_mode="HTML"
+        )
 
 @router.callback_query(F.data.startswith("src_del:"))
 async def cb_delete_source(callback: types.CallbackQuery):
