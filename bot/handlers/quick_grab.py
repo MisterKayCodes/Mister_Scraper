@@ -153,7 +153,8 @@ async def process_x_links(message: types.Message, state: FSMContext, bot: Bot):
             url=u,
             caption=clean_cap,
             status_msg=None, # keep batch status_msg clean
-            scraped=scraped
+            scraped=scraped,
+            user_id=message.from_user.id
         )
         if ok:
             delivered_count += 1
@@ -169,10 +170,11 @@ async def process_x_links(message: types.Message, state: FSMContext, bot: Bot):
         pass
 
     # Send the final action deck as a FRESH message at the very bottom
+    last_tid = urls[-1].split("?")[0].rstrip("/").split("/")[-1] if urls else ""
     deck_kb = get_delivery_action_deck_kb(
         author=last_author,
-        can_repost=has_channel,
-        url=urls[0] if urls else ""
+        content_id=last_tid,
+        has_channel=has_channel
     )
     await message.answer(
         f"✅ <b>Batch Delivery Complete!</b>\n\n"
@@ -195,14 +197,16 @@ async def cb_send_to_me(callback: types.CallbackQuery, state: FSMContext, bot: B
     
     cached_scraped = _scraped_cache.pop((callback.from_user.id, url), None)
     author = data.get("author", "")
+    tweet_id = url.split("?")[0].rstrip("/").split("/")[-1]
     
     async with AsyncSessionLocal() as session:
         settings = await Repository.get_or_create_settings(session, callback.from_user.id)
     has_channel = bool(settings.destination_channel_id)
 
-    success = await deliver_media(bot, callback.from_user.id, url, data.get("caption", ""), status_msg=callback.message, scraped=cached_scraped)
+    success = await deliver_media(bot, callback.from_user.id, url, data.get("caption", ""), status_msg=callback.message, scraped=cached_scraped, user_id=callback.from_user.id)
 
-    deck_kb = get_delivery_action_deck_kb(author=author, can_repost=has_channel, url=url)
+    # Stateless action deck: binds directly to tweet_id in Database Vault!
+    deck_kb = get_delivery_action_deck_kb(author=author, content_id=tweet_id, has_channel=has_channel)
     
     # Delete the old top preview message and send the action deck at the bottom
     try:
@@ -214,6 +218,52 @@ async def cb_send_to_me(callback: types.CallbackQuery, state: FSMContext, bot: B
         await callback.message.answer("✅ <b>Delivered!</b> Enjoy your media.", reply_markup=deck_kb, parse_mode="HTML")
     else:
         await callback.message.answer("❌ <b>Delivery failed.</b> Could not deliver media to chat.", reply_markup=deck_kb, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("qg_repost:"))
+async def cb_instant_repost_channel(callback: types.CallbackQuery, bot: Bot):
+    """Zero-bandwidth instant forward using Telegram's European datacenter file_id!"""
+    tweet_id = callback.data.split(":")[1]
+    
+    async with AsyncSessionLocal() as session:
+        settings = await Repository.get_or_create_settings(session, callback.from_user.id)
+        if not settings.destination_channel_id:
+            await callback.answer("⚠️ Link a channel in '⚙️ Channel & Branding' first!", show_alert=True)
+            return
+
+        from sqlalchemy import select
+        from data.models import SeenItem
+        stmt = select(SeenItem).where(SeenItem.user_id == callback.from_user.id, SeenItem.content_id == tweet_id)
+        res = await session.execute(stmt)
+        item = res.scalar_one_or_none()
+
+    if not item or not item.telegram_file_id:
+        await callback.answer("Media copy unavailable in Vault. Please paste the link again.", show_alert=True)
+        return
+
+    await callback.answer("⚡ Forwarding to channel instantly...")
+    try:
+        if item.media_type == "video":
+            await bot.send_video(
+                chat_id=settings.destination_channel_id,
+                video=item.telegram_file_id,
+                caption=item.clean_caption or "",
+                parse_mode="HTML"
+            )
+        else:
+            await bot.send_photo(
+                chat_id=settings.destination_channel_id,
+                photo=item.telegram_file_id,
+                caption=item.clean_caption or "",
+                parse_mode="HTML"
+            )
+        logger.info(f"[REPOST] Instant 0-byte cloud repost of {tweet_id} to {settings.destination_channel_id}")
+        await callback.message.reply(
+            f"🚀 <b>Posted instantly</b> to <code>{settings.destination_channel_id}</code>! (0-byte cloud transfer)",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"[REPOST] Error forwarding to channel: {e}")
+        await callback.message.reply(f"❌ Failed to forward to channel: {e}")
 
 @router.callback_query(F.data == "qg_post_channel")
 async def cb_post_to_channel(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
@@ -235,9 +285,10 @@ async def cb_post_to_channel(callback: types.CallbackQuery, state: FSMContext, b
     
     cached_scraped = _scraped_cache.pop((callback.from_user.id, url), None)
     author = data.get("author", "")
-    success = await deliver_media(bot, settings.destination_channel_id, url, data.get("caption", ""), status_msg=callback.message, scraped=cached_scraped)
+    tweet_id = url.split("?")[0].rstrip("/").split("/")[-1]
+    success = await deliver_media(bot, settings.destination_channel_id, url, data.get("caption", ""), status_msg=callback.message, scraped=cached_scraped, user_id=callback.from_user.id)
     
-    deck_kb = get_delivery_action_deck_kb(author=author, can_repost=False, url=url)
+    deck_kb = get_delivery_action_deck_kb(author=author, content_id=tweet_id, has_channel=False)
     if success:
         await callback.message.edit_text(f"✅ <b>Successfully posted</b> to <code>{settings.destination_channel_id}</code>!", reply_markup=deck_kb, parse_mode="HTML")
     else:
@@ -276,7 +327,8 @@ async def deliver_media(
     url: str,
     caption: str,
     status_msg: Optional[types.Message] = None,
-    scraped: Optional[ScrapedItem] = None
+    scraped: Optional[ScrapedItem] = None,
+    user_id: Optional[int] = None
 ) -> bool:
     """Delivers media directly to user DM or channel with real-time throttled progress and resilient fallback."""
     if not scraped:
@@ -287,13 +339,14 @@ async def deliver_media(
         return False
 
     safe_caption = html.escape(caption)[:1024]
+    tweet_id = url.split("?")[0].rstrip("/").split("/")[-1]
     overall_success = False
 
     for i, media in enumerate(scraped.media_list):
         m_url = media.get("url")
         m_type = media.get("type", "image")
         
-        ok = await send_media_resilient(
+        file_id_or_ok = await send_media_resilient(
             bot=bot,
             target_chat=target_chat,
             media_url=m_url,
@@ -301,7 +354,22 @@ async def deliver_media(
             caption=safe_caption,
             status_msg=status_msg
         )
-        if ok:
+        if file_id_or_ok:
             overall_success = True
+            # If user_id provided, record file_id in Database Vault for instant 0-byte forwarding!
+            if user_id:
+                try:
+                    async with AsyncSessionLocal() as session:
+                        await Repository.mark_as_completed(
+                            session=session,
+                            user_id=user_id,
+                            platform="x",
+                            content_id=tweet_id,
+                            telegram_file_id=str(file_id_or_ok) if file_id_or_ok != "SUCCESS" else None,
+                            media_type=m_type,
+                            clean_caption=safe_caption
+                        )
+                except Exception as save_err:
+                    logger.warning(f"[DELIVER] Could not cache file_id to Vault: {save_err}")
 
     return overall_success

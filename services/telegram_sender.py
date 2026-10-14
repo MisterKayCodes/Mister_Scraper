@@ -41,8 +41,9 @@ async def send_media_resilient(
             pass
 
     try:
+        sent_msg = None
         if is_video:
-            await bot.send_video(
+            sent_msg = await bot.send_video(
                 chat_id=target_chat,
                 video=media_url,
                 caption=caption,
@@ -50,15 +51,22 @@ async def send_media_resilient(
                 request_timeout=90
             )
         else:
-            await bot.send_photo(
+            sent_msg = await bot.send_photo(
                 chat_id=target_chat,
                 photo=media_url,
                 caption=caption,
                 parse_mode="HTML",
                 request_timeout=45
             )
-        logger.info(f"[SENDER] Tier 1 Cloud transfer SUCCESS for {target_chat}")
-        return True
+        
+        file_id = ""
+        if sent_msg and sent_msg.video:
+            file_id = sent_msg.video.file_id
+        elif sent_msg and sent_msg.photo:
+            file_id = sent_msg.photo[-1].file_id
+
+        logger.info(f"[SENDER] Tier 1 Cloud transfer SUCCESS for {target_chat} (file_id={file_id[:15]}...)")
+        return file_id or "SUCCESS"
 
     except Exception as tier1_err:
         logger.warning(f"[SENDER] Tier 1 Cloud transfer failed ({tier1_err}). Dropping to Tier 2 Local Upload...")
@@ -113,8 +121,9 @@ async def send_media_resilient(
 
         try:
             file_input = types.FSInputFile(str(local_path))
+            sent_msg = None
             if is_video:
-                await bot.send_video(
+                sent_msg = await bot.send_video(
                     chat_id=target_chat,
                     video=file_input,
                     caption=caption,
@@ -122,15 +131,22 @@ async def send_media_resilient(
                     request_timeout=dynamic_timeout
                 )
             else:
-                await bot.send_photo(
+                sent_msg = await bot.send_photo(
                     chat_id=target_chat,
                     photo=file_input,
                     caption=caption,
                     parse_mode="HTML",
                     request_timeout=dynamic_timeout
                 )
-            logger.info(f"[SENDER] Tier 2 Local Upload SUCCESS to {target_chat} on attempt {attempt}")
-            return True
+            
+            file_id = ""
+            if sent_msg and sent_msg.video:
+                file_id = sent_msg.video.file_id
+            elif sent_msg and sent_msg.photo:
+                file_id = sent_msg.photo[-1].file_id
+
+            logger.info(f"[SENDER] Tier 2 Local Upload SUCCESS to {target_chat} on attempt {attempt} (file_id={file_id[:15]}...)")
+            return file_id or "SUCCESS"
 
         except Exception as upload_err:
             logger.warning(f"[SENDER] Upload attempt {attempt}/{max_retries} failed: {upload_err}")

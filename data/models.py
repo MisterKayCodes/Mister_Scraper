@@ -30,6 +30,9 @@ class SeenItem(Base):
     status = Column(String(32), default="DISCOVERED")            # DISCOVERED, COMPLETED, FAILED
     retry_count = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
+    telegram_file_id = Column(String(256), nullable=True)        # Instant cloud copy (0 bytes re-upload)
+    media_type = Column(String(32), default="video")             # video or photo
+    clean_caption = Column(Text, nullable=True)                  # Cleaned caption ready for channel repost
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

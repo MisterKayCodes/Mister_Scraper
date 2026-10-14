@@ -31,5 +31,11 @@ async def init_db():
                 connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN retry_count INTEGER DEFAULT 0")
             if "error_message" not in seen_cols:
                 connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN error_message TEXT NULL")
+            if "telegram_file_id" not in seen_cols:
+                connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN telegram_file_id VARCHAR(256) NULL")
+            if "media_type" not in seen_cols:
+                connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN media_type VARCHAR(32) DEFAULT 'video'")
+            if "clean_caption" not in seen_cols:
+                connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN clean_caption TEXT NULL")
 
         await conn.run_sync(run_migrations)

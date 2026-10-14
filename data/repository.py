@@ -58,7 +58,15 @@ class Repository:
         return item
 
     @staticmethod
-    async def mark_as_completed(session: AsyncSession, user_id: int, platform: str, content_id: str) -> None:
+    async def mark_as_completed(
+        session: AsyncSession,
+        user_id: int,
+        platform: str,
+        content_id: str,
+        telegram_file_id: Optional[str] = None,
+        media_type: str = "video",
+        clean_caption: Optional[str] = None
+    ) -> None:
         stmt = select(SeenItem).where(
             SeenItem.user_id == user_id,
             SeenItem.platform == platform,
@@ -69,8 +77,22 @@ class Repository:
         if item:
             item.status = "COMPLETED"
             item.error_message = None
+            if telegram_file_id:
+                item.telegram_file_id = telegram_file_id
+            if media_type:
+                item.media_type = media_type
+            if clean_caption:
+                item.clean_caption = clean_caption
         else:
-            item = SeenItem(user_id=user_id, platform=platform, content_id=str(content_id), status="COMPLETED")
+            item = SeenItem(
+                user_id=user_id,
+                platform=platform,
+                content_id=str(content_id),
+                status="COMPLETED",
+                telegram_file_id=telegram_file_id,
+                media_type=media_type,
+                clean_caption=clean_caption
+            )
             session.add(item)
         await session.commit()
 
