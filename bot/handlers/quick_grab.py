@@ -42,16 +42,43 @@ async def cb_quick_grab_next(callback: types.CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
 
+# Known main menu buttons that should always interrupt and escape FSM states
+MENU_BUTTONS = {
+    "🚀 Auto-Sync Channel",
+    "⚡ Quick Grab",
+    "📋 Active Sources",
+    "⚙️ Channel & Branding",
+    "/start"
+}
+
+@router.message(QuickGrabStates.waiting_for_link, F.text.in_(MENU_BUTTONS))
+async def cancel_quick_grab_on_menu(message: types.Message, state: FSMContext):
+    """If user clicks any main menu button while in Quick Grab state, clear state and let router delegate."""
+    await state.clear()
+    # Aiogram will re-dispatch or handlers for menu buttons will catch it if we delegate
+
 @router.message(QuickGrabStates.waiting_for_link)
 @router.message(F.text.regexp(r'https?://(?:(?:www\.)?x\.com|(?:www\.)?twitter\.com)/[A-Za-z0-9_]+/status/\d+'))
 async def process_x_links(message: types.Message, state: FSMContext, bot: Bot):
-    await state.clear()
+    # Guard: If user sent a main menu button, ignore it here so the menu handler executes
+    if message.text.strip() in MENU_BUTTONS:
+        await state.clear()
+        return
+
     raw_text = message.text.strip()
     urls = extract_status_urls(raw_text)
 
     if not urls:
-        await message.answer("❌ No valid X status links detected. Please paste a valid post link.")
+        await message.answer(
+            "⚠️ <b>Please send a valid X (Twitter) post link:</b>\n"
+            "<i>e.g. https://x.com/DailyLoud/status/123456789</i>\n\n"
+            "Or tap any menu button below to switch.",
+            parse_mode="HTML"
+        )
         return
+
+    await state.clear()
+
 
     # Check user branding settings
     async with AsyncSessionLocal() as session:

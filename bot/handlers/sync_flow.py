@@ -139,7 +139,8 @@ def format_source_diagnostic_card(src) -> str:
     return card
 
 @router.message(F.text == "📋 Active Sources")
-async def btn_active_sources(message: types.Message):
+async def btn_active_sources(message: types.Message, state: FSMContext):
+    await state.clear()
     async with AsyncSessionLocal() as session:
         sources = await Repository.get_user_sources(session, message.from_user.id)
 
