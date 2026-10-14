@@ -10,7 +10,7 @@ def get_main_reply_keyboard(has_channel: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="🚀 Auto-Sync Channel"), KeyboardButton(text="⚡ Quick Grab")],
         [KeyboardButton(text="📋 Active Sources"), KeyboardButton(text="⚙️ Channel & Branding")]
     ]
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, is_persistent=True)
 
 def get_quick_grab_choice_kb(tweet_url: str) -> InlineKeyboardMarkup:
     """Inline choice after grabbing an X post."""

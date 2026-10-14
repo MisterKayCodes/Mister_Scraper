@@ -162,13 +162,19 @@ async def process_x_links(message: types.Message, state: FSMContext, bot: Bot):
         if idx < total_count:
             await asyncio.sleep(1.0)
 
-    # Attach follow-up action deck to the batch summary
+    # Clean up the old top status message so chat history stays clean
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
+    # Send the final action deck as a FRESH message at the very bottom
     deck_kb = get_delivery_action_deck_kb(
         author=last_author,
         can_repost=has_channel,
         url=urls[0] if urls else ""
     )
-    await status_msg.edit_text(
+    await message.answer(
         f"✅ <b>Batch Delivery Complete!</b>\n\n"
         f"📦 Successfully delivered <b>{delivered_count} of {total_count}</b> posts to your chat.\n\n"
         "<i>Tap below to grab another or auto-sync:</i>",
@@ -197,16 +203,17 @@ async def cb_send_to_me(callback: types.CallbackQuery, state: FSMContext, bot: B
     success = await deliver_media(bot, callback.from_user.id, url, data.get("caption", ""), status_msg=callback.message, scraped=cached_scraped)
 
     deck_kb = get_delivery_action_deck_kb(author=author, can_repost=has_channel, url=url)
+    
+    # Delete the old top preview message and send the action deck at the bottom
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
     if success:
-        try:
-            await callback.message.edit_text("✅ <b>Delivered!</b> Enjoy your media.", reply_markup=deck_kb, parse_mode="HTML")
-        except Exception:
-            pass
+        await callback.message.answer("✅ <b>Delivered!</b> Enjoy your media.", reply_markup=deck_kb, parse_mode="HTML")
     else:
-        try:
-            await callback.message.edit_text("❌ <b>Delivery failed.</b> Could not deliver media to chat.", reply_markup=deck_kb, parse_mode="HTML")
-        except Exception:
-            pass
+        await callback.message.answer("❌ <b>Delivery failed.</b> Could not deliver media to chat.", reply_markup=deck_kb, parse_mode="HTML")
 
 @router.callback_query(F.data == "qg_post_channel")
 async def cb_post_to_channel(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
