@@ -1,11 +1,12 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Optional
 
 from data.database import AsyncSessionLocal
 from data.repository import Repository
 from features.x.adapter import XAdapter
 from .queue_worker import conveyor_queue
+from core.time_utils import now_wat
 from loguru import logger
 
 async def run_scheduler_loop() -> None:
@@ -21,7 +22,7 @@ async def run_scheduler_loop() -> None:
         try:
             async with AsyncSessionLocal() as session:
                 sources = await Repository.get_active_sources(session)
-                now = datetime.utcnow()
+                now = now_wat()
 
                 for src in sources:
                     # Check if run interval has elapsed

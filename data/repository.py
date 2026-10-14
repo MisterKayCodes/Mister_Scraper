@@ -2,6 +2,7 @@ from typing import Optional, List
 from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from .models import UserSetting, SeenItem, HarvestTask, ScheduledSource
+from core.time_utils import now_wat
 
 class Repository:
     """The Vault: Pure database access layer."""
@@ -99,7 +100,7 @@ class Repository:
         if src:
             if delivered_increment > 0:
                 src.total_delivered = (src.total_delivered or 0) + delivered_increment
-                src.last_posted_at = datetime.utcnow()
+                src.last_posted_at = now_wat()
             if last_error is not None:
                 src.last_error = last_error
             await session.commit()

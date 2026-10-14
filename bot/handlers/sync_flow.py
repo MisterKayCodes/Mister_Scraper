@@ -96,6 +96,7 @@ async def cb_cancel_sync(callback: types.CallbackQuery, state: FSMContext):
 # ----------------- Active Sources / Pair Manager -----------------
 
 from datetime import datetime
+from core.time_utils import now_wat
 
 def format_source_diagnostic_card(src) -> str:
     """Renders the Mister_Channels gold-standard diagnostic feed card."""
@@ -104,7 +105,7 @@ def format_source_diagnostic_card(src) -> str:
     # Calculate countdown
     countdown_str = "Calculating..."
     if src.next_check:
-        now = datetime.utcnow()
+        now = now_wat()
         if src.next_check > now:
             diff = src.next_check - now
             mins = int(diff.total_seconds() // 60)
@@ -173,7 +174,7 @@ async def cb_toggle_source(callback: types.CallbackQuery):
 @router.callback_query(F.data.startswith("src_check:"))
 async def cb_check_source_now(callback: types.CallbackQuery):
     source_id = int(callback.data.split(":")[1])
-    await callback.answer("⏳ Radar scanning @target now...")
+    await callback.answer("⏳ Scanning now...")  # Only ONE answer per callback query
 
     async with AsyncSessionLocal() as session:
         stmt = select(ScheduledSource).where(ScheduledSource.id == source_id, ScheduledSource.user_id == callback.from_user.id)
@@ -181,7 +182,7 @@ async def cb_check_source_now(callback: types.CallbackQuery):
         src = res.scalar_one_or_none()
 
     if not src:
-        await callback.answer("Source not found.", show_alert=True)
+        await callback.message.reply("❌ Source not found.")
         return
 
     # Trigger scan immediately
@@ -203,16 +204,20 @@ async def cb_check_source_now(callback: types.CallbackQuery):
                     await conveyor_queue.put((link, src.user_id, src.id, src.destination_channel_id, sig, f_mode))
                     new_count += 1
 
-        await callback.answer(f"✅ Found {new_count} new posts! Queued for delivery.")
-        # Reload card
+        # Reload fresh card after scan
         async with AsyncSessionLocal() as session:
             res = await session.execute(stmt)
             src = res.scalar_one_or_none()
             if src:
-                await callback.message.edit_text(format_source_diagnostic_card(src), reply_markup=get_source_item_kb(src.id, src.is_active), parse_mode="HTML")
+                result_note = f"\n\n✅ <b>Manual check done:</b> {new_count} new post(s) queued."
+                await callback.message.edit_text(
+                    format_source_diagnostic_card(src) + result_note,
+                    reply_markup=get_source_item_kb(src.id, src.is_active),
+                    parse_mode="HTML"
+                )
 
     except Exception as e:
-        await callback.answer(f"❌ Scan failed: {str(e)[:50]}", show_alert=True)
+        await callback.message.reply(f"❌ Scan failed: {str(e)[:100]}")
 
 @router.callback_query(F.data.startswith("src_del:"))
 async def cb_delete_source(callback: types.CallbackQuery):
