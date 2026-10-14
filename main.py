@@ -14,12 +14,19 @@ from services.queue_worker import conveyor_worker
 from services.scheduler import run_scheduler_loop
 from api import create_app
 
-# Configure Loguru output
+# Configure Loguru output: stdout + rotating persistent file log for monthly tracking
 logger.remove()
 logger.add(
     sys.stdout,
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
     colorize=True
+)
+logger.add(
+    "logs/mister_scraper_{time:YYYY-MM}.log",
+    rotation="50 MB",
+    retention="90 days",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+    encoding="utf-8"
 )
 
 async def run_fastapi(app):
