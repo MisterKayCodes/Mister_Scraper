@@ -1,0 +1,24 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Data & Storage
+downloads/
+scratch/
+*.db
+*.sqlite3
+data/*.db
+data/cookies.json
+data/cookies.txt
+
+# Secrets & Configuration
+.env
+.env.local
