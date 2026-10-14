@@ -1,5 +1,6 @@
 import asyncio
 import html
+from typing import Optional
 from pathlib import Path
 from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
@@ -73,7 +74,7 @@ async def cb_send_to_me(callback: types.CallbackQuery, state: FSMContext, bot: B
         return
 
     await callback.message.edit_text("⏳ <i>Downloading and delivering to your chat...</i>", parse_mode="HTML")
-    await deliver_media(bot, callback.from_user.id, url, data.get("caption", ""))
+    await deliver_media(bot, callback.from_user.id, url, data.get("caption", ""), status_msg=callback.message)
     await callback.answer()
 
 @router.callback_query(F.data == "qg_post_channel")
@@ -91,16 +92,17 @@ async def cb_post_to_channel(callback: types.CallbackQuery, state: FSMContext, b
         await callback.answer("Session expired. Please paste the link again.", show_alert=True)
         return
 
-    await callback.message.edit_text(f"⏳ <i>Posting directly to {settings.destination_channel_id}...</i>", parse_mode="HTML")
-    success = await deliver_media(bot, settings.destination_channel_id, url, data.get("caption", ""))
+    success = await deliver_media(bot, settings.destination_channel_id, url, data.get("caption", ""), status_msg=callback.message)
     if success:
         await callback.message.edit_text(f"✅ <b>Successfully posted</b> to <code>{settings.destination_channel_id}</code>!", parse_mode="HTML")
     else:
         await callback.message.edit_text(f"❌ <b>Delivery failed.</b> Make sure the bot is an Admin in <code>{settings.destination_channel_id}</code>.", parse_mode="HTML")
     await callback.answer()
 
-async def deliver_media(bot: Bot, target_chat: any, url: str, caption: str) -> bool:
-    """Delivers media directly to user DM or channel."""
+from bot.utils.progress import TelegramProgressTracker
+
+async def deliver_media(bot: Bot, target_chat: any, url: str, caption: str, status_msg: Optional[types.Message] = None) -> bool:
+    """Delivers media directly to user DM or channel with real-time throttled progress."""
     scraped = await asyncio.to_thread(XAdapter.get_single_post, url)
     if not scraped or not scraped.media_list:
         return False
@@ -109,6 +111,13 @@ async def deliver_media(bot: Bot, target_chat: any, url: str, caption: str) -> b
     download_dir.mkdir(exist_ok=True)
     safe_caption = html.escape(caption)[:1024]
 
+    loop = asyncio.get_running_loop()
+    tracker = TelegramProgressTracker(status_msg, action_title="Downloading Media") if status_msg else None
+
+    def sync_progress_bridge(downloaded: int, total: int):
+        if tracker:
+            asyncio.run_coroutine_threadsafe(tracker.update(downloaded, total), loop)
+
     success = False
     for i, media in enumerate(scraped.media_list):
         m_url = media.get("url")
@@ -116,7 +125,24 @@ async def deliver_media(bot: Bot, target_chat: any, url: str, caption: str) -> b
         ext = resolve_extension(m_type, m_url)
 
         local_path = download_dir / f"qg_{i}.{ext}"
-        if await asyncio.to_thread(download_file, m_url, local_path):
+
+        # Download with live progress callback
+        download_ok = await asyncio.to_thread(
+            download_file,
+            m_url,
+            local_path,
+            None,
+            128 * 1024,
+            sync_progress_bridge
+        )
+
+        if download_ok:
+            if status_msg:
+                try:
+                    await status_msg.edit_text("📤 <i>Delivering media to chat...</i>", parse_mode="HTML")
+                except Exception:
+                    pass
+
             try:
                 file_input = types.FSInputFile(str(local_path))
                 if "video" in m_type.lower() or ext == "mp4":
@@ -125,7 +151,7 @@ async def deliver_media(bot: Bot, target_chat: any, url: str, caption: str) -> b
                     await bot.send_photo(target_chat, photo=file_input, caption=safe_caption, parse_mode="HTML")
                 success = True
             except Exception as e:
-                print(f"[QUICK_GRAB] Send error: {e}")
+                logger.error(f"[QUICK_GRAB] Send error: {e}")
             finally:
                 if local_path.exists():
                     try: local_path.unlink()
