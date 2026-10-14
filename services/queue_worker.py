@@ -49,66 +49,34 @@ async def process_queue_item(bot: Bot, item: Tuple) -> None:
     download_dir.mkdir(exist_ok=True)
     safe_base_name = sanitize_filename(scraped.caption)
 
-    # Process and download each media item
+    from .telegram_sender import send_media_resilient
+
+    # Process and deliver each media item via Resilient Sender
     for i, media in enumerate(scraped.media_list):
         m_url = media.get("url")
         m_type = media.get("type", "image")
-        ext = resolve_extension(m_type, m_url)
 
-        file_name = f"{safe_base_name}_{tweet_id}_{i}.{ext}"
-        local_path = download_dir / file_name
+        success = await send_media_resilient(
+            bot=bot,
+            target_chat=destination_channel,
+            media_url=m_url,
+            media_type=m_type,
+            caption=safe_caption
+        )
 
-        # Download chunked
-        success = await asyncio.to_thread(download_file, m_url, local_path)
-        if not success:
-            err_msg = f"Failed to download media: {m_url[:50]}"
-            logger.error(f"[CONVEYOR] {err_msg}")
-            async with AsyncSessionLocal() as session:
-                await Repository.mark_as_failed(session, user_id, "x", tweet_id, err_msg)
-            continue
-
-        # Upload to target channel
-        try:
-            file_input = types.FSInputFile(str(local_path))
-            if "video" in m_type.lower() or ext == "mp4":
-                await bot.send_video(
-                    chat_id=destination_channel,
-                    video=file_input,
-                    caption=safe_caption,
-                    parse_mode="HTML",
-                    request_timeout=300
-                )
-            else:
-                await bot.send_photo(
-                    chat_id=destination_channel,
-                    photo=file_input,
-                    caption=safe_caption,
-                    parse_mode="HTML",
-                    request_timeout=60
-                )
-
-            # Mark as COMPLETED in The Vault (Guaranteed State)
+        if success:
             async with AsyncSessionLocal() as session:
                 await Repository.mark_as_completed(session, user_id, "x", tweet_id)
-                # If tied to a scheduled source, update its delivery stats
                 if task_id:
                     await Repository.update_source_stats(session, source_id=task_id, delivered_increment=1, last_error="None (Healthy)")
-
             logger.info(f"[CONVEYOR] Successfully delivered {tweet_id} to {destination_channel}")
-
-        except Exception as e:
-            err_msg = f"Telegram upload error: {str(e)[:100]}"
-            logger.error(f"[CONVEYOR] Error posting to {destination_channel}: {err_msg}")
+        else:
+            err_msg = f"Delivery failed for {m_url[:50]}"
+            logger.error(f"[CONVEYOR] {err_msg}")
             async with AsyncSessionLocal() as session:
                 await Repository.mark_as_failed(session, user_id, "x", tweet_id, err_msg)
                 if task_id:
                     await Repository.update_source_stats(session, source_id=task_id, last_error=err_msg)
-        finally:
-            if local_path.exists():
-                try:
-                    local_path.unlink()
-                except Exception:
-                    pass
 
 async def conveyor_worker(bot: Bot) -> None:
     """Continuous background worker with human anti-ban jitter."""

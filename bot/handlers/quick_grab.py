@@ -123,6 +123,8 @@ async def cb_post_to_channel(callback: types.CallbackQuery, state: FSMContext, b
     else:
         await callback.message.edit_text(f"❌ <b>Delivery failed.</b> Make sure the bot is an Admin in <code>{settings.destination_channel_id}</code>.", parse_mode="HTML")
 
+from services.telegram_sender import send_media_resilient
+
 async def deliver_media(
     bot: Bot,
     target_chat: any,
@@ -131,7 +133,7 @@ async def deliver_media(
     status_msg: Optional[types.Message] = None,
     scraped: Optional[ScrapedItem] = None
 ) -> bool:
-    """Delivers media directly to user DM or channel with real-time throttled progress."""
+    """Delivers media directly to user DM or channel with real-time throttled progress and resilient fallback."""
     if not scraped:
         scraped = await asyncio.to_thread(XAdapter.get_single_post, url)
     
@@ -139,60 +141,22 @@ async def deliver_media(
         logger.error(f"[DELIVER] Failed to retrieve media list for {url}")
         return False
 
-    download_dir = Path(config.DOWNLOAD_DIR)
-    download_dir.mkdir(exist_ok=True)
     safe_caption = html.escape(caption)[:1024]
+    overall_success = False
 
-    loop = asyncio.get_running_loop()
-    tracker = TelegramProgressTracker(status_msg, action_title="Downloading Media") if status_msg else None
-
-    def sync_progress_bridge(downloaded: int, total: int):
-        if tracker:
-            asyncio.run_coroutine_threadsafe(tracker.update(downloaded, total), loop)
-
-    success = False
     for i, media in enumerate(scraped.media_list):
         m_url = media.get("url")
         m_type = media.get("type", "image")
-        ext = resolve_extension(m_type, m_url)
-
-        local_path = download_dir / f"qg_{i}.{ext}"
-
-        # Download with live progress callback
-        download_ok = await asyncio.to_thread(
-            download_file,
-            m_url,
-            local_path,
-            None,
-            128 * 1024,
-            sync_progress_bridge
+        
+        ok = await send_media_resilient(
+            bot=bot,
+            target_chat=target_chat,
+            media_url=m_url,
+            media_type=m_type,
+            caption=safe_caption,
+            status_msg=status_msg
         )
+        if ok:
+            overall_success = True
 
-        if not download_ok:
-            logger.error(f"[DELIVER] Download file failed for {m_url}")
-            continue
-
-        if status_msg:
-            try:
-                await status_msg.edit_text("📤 <i>Uploading media to chat...</i>", parse_mode="HTML")
-            except Exception:
-                pass
-
-        try:
-            file_input = types.FSInputFile(str(local_path))
-            if "video" in m_type.lower() or ext == "mp4":
-                logger.info(f"[DELIVER] Sending video ({local_path}) to {target_chat}...")
-                await bot.send_video(target_chat, video=file_input, caption=safe_caption, parse_mode="HTML", request_timeout=300)
-            else:
-                logger.info(f"[DELIVER] Sending photo ({local_path}) to {target_chat}...")
-                await bot.send_photo(target_chat, photo=file_input, caption=safe_caption, parse_mode="HTML", request_timeout=60)
-            success = True
-        except Exception as e:
-            logger.error(f"[QUICK_GRAB] Telegram send error to {target_chat}: {e}")
-        finally:
-            if local_path.exists():
-                try:
-                    local_path.unlink()
-                except Exception:
-                    pass
-    return success
+    return overall_success
