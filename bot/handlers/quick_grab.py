@@ -1,26 +1,30 @@
 import asyncio
-import html
-from typing import Optional, Dict, List
-from pathlib import Path
+from typing import Dict
 from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
 from loguru import logger
 
-import config
 from core.text_cleaner import MessageCleaner
-from core.media_resolver import sanitize_filename, resolve_extension, extract_status_urls
+from core.media_resolver import extract_status_urls
 from data.database import AsyncSessionLocal
 from data.repository import Repository
 from features.x.adapter import XAdapter, ScrapedItem
-from services.downloader import download_file
-from services.telegram_sender import send_media_resilient
+from services.quick_grab_service import deliver_media, process_batch_grab, repost_to_channel_from_vault
 from bot.states import QuickGrabStates
 from bot.keyboards import get_quick_grab_choice_kb, get_delivery_action_deck_kb
 
 router = Router(name="quick_grab_router")
 
-# Cache to avoid re-requesting metadata twice between preview and delivery
+# Cache to avoid re-requesting metadata twice between preview card and delivery click
 _scraped_cache: Dict[tuple, ScrapedItem] = {}
+
+MENU_BUTTONS = {
+    "🚀 Auto-Sync Channel",
+    "⚡ Quick Grab",
+    "📋 Active Sources",
+    "⚙️ Channel & Branding",
+    "/start"
+}
 
 @router.message(F.text == "⚡ Quick Grab")
 async def btn_quick_grab(message: types.Message, state: FSMContext):
@@ -42,25 +46,9 @@ async def cb_quick_grab_next(callback: types.CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
 
-# Known main menu buttons that should always interrupt and escape FSM states
-MENU_BUTTONS = {
-    "🚀 Auto-Sync Channel",
-    "⚡ Quick Grab",
-    "📋 Active Sources",
-    "⚙️ Channel & Branding",
-    "/start"
-}
-
-@router.message(QuickGrabStates.waiting_for_link, F.text.in_(MENU_BUTTONS))
-async def cancel_quick_grab_on_menu(message: types.Message, state: FSMContext):
-    """If user clicks any main menu button while in Quick Grab state, clear state and let router delegate."""
-    await state.clear()
-    # Aiogram will re-dispatch or handlers for menu buttons will catch it if we delegate
-
 @router.message(QuickGrabStates.waiting_for_link)
 @router.message(F.text.regexp(r'https?://(?:(?:www\.)?x\.com|(?:www\.)?twitter\.com)/[A-Za-z0-9_]+/status/\d+'))
 async def process_x_links(message: types.Message, state: FSMContext, bot: Bot):
-    # Guard: If user sent a main menu button, ignore it here so the menu handler executes
     if message.text.strip() in MENU_BUTTONS:
         await state.clear()
         return
@@ -79,8 +67,6 @@ async def process_x_links(message: types.Message, state: FSMContext, bot: Bot):
 
     await state.clear()
 
-
-    # Check user branding settings
     async with AsyncSessionLocal() as session:
         settings = await Repository.get_or_create_settings(session, message.from_user.id)
 
@@ -88,17 +74,12 @@ async def process_x_links(message: types.Message, state: FSMContext, bot: Bot):
     f_mode = settings.filter_mode if settings.filter_mode is not None else 1
     has_channel = bool(settings.destination_channel_id)
 
-    # -------------------------------------------------------------
-    # CASE 1: Single Link Drop (Interactive preview + fast delivery)
-    # -------------------------------------------------------------
+    # 1. Single Link Flow
     if len(urls) == 1:
         url = urls[0]
-        logger.info(f"[QUICK_GRAB] Single link received from User {message.from_user.id}: {url}")
         status_msg = await message.answer("🔍 <i>Fetching X content...</i>", parse_mode="HTML")
-
         scraped = await asyncio.to_thread(XAdapter.get_single_post, url)
         if not scraped or not scraped.media_list:
-            logger.warning(f"[QUICK_GRAB] No media found for {url}")
             await status_msg.edit_text("❌ <b>No media found</b> in this post (or link is private/deleted).", parse_mode="HTML")
             return
 
@@ -115,67 +96,30 @@ async def process_x_links(message: types.Message, state: FSMContext, bot: Bot):
         await status_msg.edit_text(card, reply_markup=get_quick_grab_choice_kb(url), parse_mode="HTML")
         return
 
-    # -------------------------------------------------------------
-    # CASE 2: Multi-Link Batch Drop ("One Tap, Many Work")
-    # -------------------------------------------------------------
+    # 2. Multi-Link Batch Flow (Delegated to Service)
     total_count = len(urls)
-    logger.info(f"[QUICK_GRAB] Batch drop of {total_count} links from User {message.from_user.id}")
     status_msg = await message.answer(
         f"⚡ <b>Batch Grab Initiated ({total_count} posts)</b>\n\n"
         f"⏳ Processing item 1 of {total_count}...",
         parse_mode="HTML"
     )
 
-    delivered_count = 0
-    last_author = ""
+    delivered_count, last_author = await process_batch_grab(
+        bot=bot,
+        user_id=message.from_user.id,
+        urls=urls,
+        status_msg=status_msg,
+        filter_mode=f_mode,
+        signature=sig
+    )
 
-    for idx, u in enumerate(urls, start=1):
-        try:
-            await status_msg.edit_text(
-                f"⚡ <b>Batch Grab ({total_count} posts)</b>\n\n"
-                f"⏳ Downloading & delivering {idx}/{total_count}...",
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
-
-        scraped = await asyncio.to_thread(XAdapter.get_single_post, u)
-        if not scraped or not scraped.media_list:
-            logger.warning(f"[BATCH] Skipping {u} (no media or error)")
-            continue
-
-        last_author = scraped.author
-        clean_cap = MessageCleaner.clean(scraped.caption, mode=f_mode, signature=sig)
-
-        ok = await deliver_media(
-            bot=bot,
-            target_chat=message.from_user.id,
-            url=u,
-            caption=clean_cap,
-            status_msg=None, # keep batch status_msg clean
-            scraped=scraped,
-            user_id=message.from_user.id
-        )
-        if ok:
-            delivered_count += 1
-
-        # Gentle 1s jitter between batch items
-        if idx < total_count:
-            await asyncio.sleep(1.0)
-
-    # Clean up the old top status message so chat history stays clean
     try:
         await status_msg.delete()
     except Exception:
         pass
 
-    # Send the final action deck as a FRESH message at the very bottom
     last_tid = urls[-1].split("?")[0].rstrip("/").split("/")[-1] if urls else ""
-    deck_kb = get_delivery_action_deck_kb(
-        author=last_author,
-        content_id=last_tid,
-        has_channel=has_channel
-    )
+    deck_kb = get_delivery_action_deck_kb(author=last_author, content_id=last_tid, has_channel=has_channel)
     await message.answer(
         f"✅ <b>Batch Delivery Complete!</b>\n\n"
         f"📦 Successfully delivered <b>{delivered_count} of {total_count}</b> posts to your chat.\n\n"
@@ -203,12 +147,18 @@ async def cb_send_to_me(callback: types.CallbackQuery, state: FSMContext, bot: B
         settings = await Repository.get_or_create_settings(session, callback.from_user.id)
     has_channel = bool(settings.destination_channel_id)
 
-    success = await deliver_media(bot, callback.from_user.id, url, data.get("caption", ""), status_msg=callback.message, scraped=cached_scraped, user_id=callback.from_user.id)
+    success = await deliver_media(
+        bot=bot,
+        target_chat=callback.from_user.id,
+        url=url,
+        caption=data.get("caption", ""),
+        status_msg=callback.message,
+        scraped=cached_scraped,
+        user_id=callback.from_user.id
+    )
 
-    # Stateless action deck: binds directly to tweet_id in Database Vault!
     deck_kb = get_delivery_action_deck_kb(author=author, content_id=tweet_id, has_channel=has_channel)
     
-    # Delete the old top preview message and send the action deck at the bottom
     try:
         await callback.message.delete()
     except Exception:
@@ -220,8 +170,8 @@ async def cb_send_to_me(callback: types.CallbackQuery, state: FSMContext, bot: B
         await callback.message.answer("❌ <b>Delivery failed.</b> Could not deliver media to chat.", reply_markup=deck_kb, parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("qg_repost:"))
-async def cb_instant_repost_channel(callback: types.CallbackQuery, bot: Bot):
-    """Zero-bandwidth instant forward using Telegram's European datacenter file_id!"""
+async def cb_instant_repost(callback: types.CallbackQuery, bot: Bot):
+    """Stateless 0-byte instant channel forwarder using Telegram file_id."""
     tweet_id = callback.data.split(":")[1]
     
     async with AsyncSessionLocal() as session:
@@ -230,40 +180,9 @@ async def cb_instant_repost_channel(callback: types.CallbackQuery, bot: Bot):
             await callback.answer("⚠️ Link a channel in '⚙️ Channel & Branding' first!", show_alert=True)
             return
 
-        from sqlalchemy import select
-        from data.models import SeenItem
-        stmt = select(SeenItem).where(SeenItem.user_id == callback.from_user.id, SeenItem.content_id == tweet_id)
-        res = await session.execute(stmt)
-        item = res.scalar_one_or_none()
-
-    if not item or not item.telegram_file_id:
-        await callback.answer("Media copy unavailable in Vault. Please paste the link again.", show_alert=True)
-        return
-
     await callback.answer("⚡ Forwarding to channel instantly...")
-    try:
-        if item.media_type == "video":
-            await bot.send_video(
-                chat_id=settings.destination_channel_id,
-                video=item.telegram_file_id,
-                caption=item.clean_caption or "",
-                parse_mode="HTML"
-            )
-        else:
-            await bot.send_photo(
-                chat_id=settings.destination_channel_id,
-                photo=item.telegram_file_id,
-                caption=item.clean_caption or "",
-                parse_mode="HTML"
-            )
-        logger.info(f"[REPOST] Instant 0-byte cloud repost of {tweet_id} to {settings.destination_channel_id}")
-        await callback.message.reply(
-            f"🚀 <b>Posted instantly</b> to <code>{settings.destination_channel_id}</code>! (0-byte cloud transfer)",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logger.error(f"[REPOST] Error forwarding to channel: {e}")
-        await callback.message.reply(f"❌ Failed to forward to channel: {e}")
+    success, reply_text = await repost_to_channel_from_vault(bot, callback.from_user.id, tweet_id, settings.destination_channel_id)
+    await callback.message.reply(reply_text, parse_mode="HTML")
 
 @router.callback_query(F.data == "qg_post_channel")
 async def cb_post_to_channel(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
@@ -296,9 +215,7 @@ async def cb_post_to_channel(callback: types.CallbackQuery, state: FSMContext, b
 
 @router.callback_query(F.data.startswith("qg_sync_author:"))
 async def cb_quick_sync_author(callback: types.CallbackQuery, state: FSMContext):
-    """1-Tap shortcut to initiate Auto-Sync for the author of a delivered post."""
     author = callback.data.split(":")[1]
-    
     async with AsyncSessionLocal() as session:
         settings = await Repository.get_or_create_settings(session, callback.from_user.id)
         
@@ -320,57 +237,3 @@ async def cb_quick_sync_author(callback: types.CallbackQuery, state: FSMContext)
         reply_markup=get_interval_selection_kb(),
         parse_mode="HTML"
     )
-
-async def deliver_media(
-    bot: Bot,
-    target_chat: any,
-    url: str,
-    caption: str,
-    status_msg: Optional[types.Message] = None,
-    scraped: Optional[ScrapedItem] = None,
-    user_id: Optional[int] = None
-) -> bool:
-    """Delivers media directly to user DM or channel with real-time throttled progress and resilient fallback."""
-    if not scraped:
-        scraped = await asyncio.to_thread(XAdapter.get_single_post, url)
-    
-    if not scraped or not scraped.media_list:
-        logger.error(f"[DELIVER] Failed to retrieve media list for {url}")
-        return False
-
-    safe_caption = html.escape(caption)[:1024]
-    tweet_id = url.split("?")[0].rstrip("/").split("/")[-1]
-    overall_success = False
-
-    for i, media in enumerate(scraped.media_list):
-        m_url = media.get("url")
-        m_type = media.get("type", "image")
-        
-        file_id_or_ok = await send_media_resilient(
-            bot=bot,
-            target_chat=target_chat,
-            media_url=m_url,
-            media_type=m_type,
-            caption=safe_caption,
-            status_msg=status_msg,
-            thumbnail_url=media.get("thumbnail_url")
-        )
-        if file_id_or_ok:
-            overall_success = True
-            # If user_id provided, record file_id in Database Vault for instant 0-byte forwarding!
-            if user_id:
-                try:
-                    async with AsyncSessionLocal() as session:
-                        await Repository.mark_as_completed(
-                            session=session,
-                            user_id=user_id,
-                            platform="x",
-                            content_id=tweet_id,
-                            telegram_file_id=str(file_id_or_ok) if file_id_or_ok != "SUCCESS" else None,
-                            media_type=m_type,
-                            clean_caption=safe_caption
-                        )
-                except Exception as save_err:
-                    logger.warning(f"[DELIVER] Could not cache file_id to Vault: {save_err}")
-
-    return overall_success

@@ -113,7 +113,21 @@ async def send_media_resilient(
     # Calculate dynamic timeout based on file size (minimum 600s, + 25s per MB)
     file_size_mb = local_path.stat().st_size / (1024 * 1024)
     dynamic_timeout = max(600, int(file_size_mb * 25))
-    logger.info(f"[SENDER] Local file ready: {file_size_mb:.1f} MB. Allocated upload timeout: {dynamic_timeout}s")
+    # Download thumbnail locally if provided (Twitter blocks Telegram from fetching thumbnail URLs directly)
+    thumb_path = None
+    thumb_input = None
+    if is_video and thumbnail_url:
+        try:
+            thumb_path = download_dir / f"thumb_{timestamp}.jpg"
+            import requests
+            r_thumb = await asyncio.to_thread(requests.get, thumbnail_url, timeout=10)
+            if r_thumb.status_code == 200:
+                with open(thumb_path, "wb") as f_thumb:
+                    f_thumb.write(r_thumb.content)
+                thumb_input = types.FSInputFile(str(thumb_path))
+                logger.info(f"[SENDER] Downloaded thumbnail ({len(r_thumb.content)} bytes) for video")
+        except Exception as thumb_err:
+            logger.warning(f"[SENDER] Failed to download thumbnail: {thumb_err}")
 
     for attempt in range(1, max_retries + 1):
         upload_tracker = TelegramProgressTracker(status_msg, action_title="Uploading to Telegram (720p HD)") if status_msg else None
@@ -166,11 +180,12 @@ async def send_media_resilient(
         finally:
             pass
 
-    # Final cleanup of temp file
-    if local_path.exists():
-        try:
-            local_path.unlink()
-        except Exception:
-            pass
+    # Final cleanup of temp files
+    for p in [local_path, thumb_path]:
+        if p and p.exists():
+            try:
+                p.unlink()
+            except Exception:
+                pass
 
     return False
