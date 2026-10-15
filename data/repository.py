@@ -88,6 +88,31 @@ class Repository:
         return result.scalar() or 0
 
     @staticmethod
+    async def get_failed_count(session: AsyncSession, user_id: int, platform: str = "x") -> int:
+        from sqlalchemy import func
+        stmt = (
+            select(func.count(SeenItem.id))
+            .where(
+                SeenItem.user_id == user_id,
+                SeenItem.platform == platform,
+                SeenItem.status == "FAILED"
+            )
+        )
+        result = await session.execute(stmt)
+        return result.scalar() or 0
+
+    @staticmethod
+    async def get_all_pending_for_rehydration(session: AsyncSession) -> List[SeenItem]:
+        """Fetch all discovered/pending items across all sources for queue rehydration on startup or empty queue."""
+        stmt = (
+            select(SeenItem)
+            .where(SeenItem.status.in_(["DISCOVERED", "PENDING", "QUEUED"]))
+            .order_by(SeenItem.created_at.asc())
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
     async def mark_as_completed(
         session: AsyncSession,
         user_id: int,

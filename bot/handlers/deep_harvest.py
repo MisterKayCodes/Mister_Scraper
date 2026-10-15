@@ -143,6 +143,7 @@ async def cb_deep_harvest_run(callback: types.CallbackQuery):
 
             pending = await Repository.get_pending_items(session, callback.from_user.id, "x")
             total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x")
+            total_failed = await Repository.get_failed_count(session, callback.from_user.id, "x")
 
         summary_text = (
             f"✅ <b>Link Hunter Finished! Browser Closed.</b>\n\n"
@@ -153,7 +154,7 @@ async def cb_deep_harvest_run(callback: types.CallbackQuery):
         )
         queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
         await callback.message.edit_text(
-            format_source_diagnostic_card(src) + f"\n\n{summary_text}" + queue_text,
+            format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + f"\n\n{summary_text}" + queue_text,
             reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
             parse_mode="HTML"
         )
@@ -217,10 +218,11 @@ async def cb_deliver_next_now(callback: types.CallbackQuery):
         src = res.scalar_one_or_none()
         remaining = await Repository.get_pending_items(session, callback.from_user.id, "x")
         total_remaining = await Repository.get_pending_count(session, callback.from_user.id, "x")
+        total_failed = await Repository.get_failed_count(session, callback.from_user.id, "x")
 
     queue_text = format_queue_preview(remaining, src.target, total_count=total_remaining)
     await callback.message.edit_text(
-        format_source_diagnostic_card(src) + f"\n\n✅ <b>Delivered post {item_to_deliver.content_id} to {src.destination_channel_id}!</b>" + queue_text,
+        format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_remaining) + f"\n\n✅ <b>Delivered post {item_to_deliver.content_id} to {src.destination_channel_id}!</b>" + queue_text,
         reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_remaining > 0),
         parse_mode="HTML"
     )

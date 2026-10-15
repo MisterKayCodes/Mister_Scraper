@@ -7,7 +7,7 @@ can all import without circular dependency.
 from core.time_utils import now_wat
 
 
-def format_source_diagnostic_card(src) -> str:
+def format_source_diagnostic_card(src, failed_count: int = 0, pending_count: int = 0) -> str:
     """Renders the Mister_Channels gold-standard diagnostic feed card."""
     status = "ACTIVE ✅" if src.is_active else "PAUSED ⏸️"
 
@@ -57,6 +57,8 @@ def format_source_diagnostic_card(src) -> str:
         )
     elif del_status.get("queue_size", 0) > 0:
         delivery_line = f"🚚 <b>Delivery:</b> {del_status['queue_size']} posts queued in Conveyor\n"
+    elif pending_count > 0:
+        delivery_line = f"🚚 <b>Delivery:</b> ⏳ Auto-Rehydrating ({pending_count} pending in DB)\n"
     else:
         delivery_line = "🚚 <b>Delivery:</b> Idle (Waiting for new posts)\n"
 
@@ -70,6 +72,7 @@ def format_source_diagnostic_card(src) -> str:
         f"⏱️ <b>Interval:</b> Every {interval_display}\n"
         f"⏳ <b>Next Check:</b> {countdown_str}\n"
         f"📦 <b>Delivered:</b> {src.total_delivered or 0} items\n"
+        f"❌ <b>Failed:</b> {failed_count} items\n"
         f"⚠️ <b>Last Error:</b> {error_display}\n"
         "───────────────────────────"
     )

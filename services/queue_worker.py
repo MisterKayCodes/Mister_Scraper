@@ -24,6 +24,7 @@ from core.time_utils import now_wat
 # Queue items: Tuple[tweet_url: str, user_id: int, task_id: int, destination_channel: str, custom_signature: str, filter_mode: int]
 conveyor_queue = asyncio.Queue()
 _is_first_post = True
+_in_flight_ids = set()
 
 # Global Rate Limit Tracker for UI & Worker coordination
 rate_limit_state = {
@@ -41,6 +42,51 @@ delivery_state = {
     "total_in_batch": 0,
     "remaining_in_batch": 0
 }
+
+async def rehydrate_conveyor_queue() -> int:
+    """
+    Fetches all un-posted (DISCOVERED, PENDING, QUEUED) items from DB and
+    pushes them back into conveyor_queue if they are not already in it.
+    Prevents queue starvation after bot restarts or unexpected errors.
+    """
+    async with AsyncSessionLocal() as session:
+        pending_items = await Repository.get_all_pending_for_rehydration(session)
+        if not pending_items:
+            return 0
+
+        sources = await Repository.get_active_sources(session)
+        src_map = {(s.user_id, s.target.lower()): s for s in sources}
+
+        count = 0
+        for item in pending_items:
+            tid = str(item.content_id)
+            if tid in _in_flight_ids:
+                continue
+            if await Repository.is_duplicate(session, item.user_id, item.platform or "x", tid):
+                continue
+
+            tgt = (item.source_profile or "").lower()
+            src = src_map.get((item.user_id, tgt))
+            dest_channel = src.destination_channel_id if src else None
+            source_id = src.id if src else None
+
+            settings = await Repository.get_or_create_settings(session, item.user_id)
+            if not dest_channel:
+                dest_channel = settings.destination_channel_id
+            sig = settings.custom_signature or ""
+            f_mode = settings.filter_mode if settings.filter_mode is not None else 1
+
+            if not dest_channel:
+                continue
+
+            url = item.url or f"https://x.com/{item.source_profile or 'i'}/status/{tid}"
+            _in_flight_ids.add(tid)
+            await conveyor_queue.put((url, item.user_id, source_id, dest_channel, sig, f_mode))
+            count += 1
+
+        if count > 0:
+            logger.info(f"[CONVEYOR] Rehydrated {count} pending items into conveyor queue.")
+        return count
 
 def get_delivery_status() -> dict:
     """Returns active delivery state for diagnostic card rendering."""
@@ -69,65 +115,74 @@ async def process_queue_item(bot: Bot, item: Tuple) -> None:
     """Processes a single media item from the conveyor belt."""
     url, user_id, task_id, destination_channel, signature, filter_mode = item
     tweet_id = url.split("?")[0].rstrip("/").split("/")[-1]
+    _in_flight_ids.add(tweet_id)
 
-    # Check deduplication first
-    async with AsyncSessionLocal() as session:
-        if await Repository.is_duplicate(session, user_id, "x", tweet_id):
-            print(f"[CONVEYOR] Skipped duplicate tweet: {tweet_id}")
+    try:
+        # Check deduplication first
+        async with AsyncSessionLocal() as session:
+            if await Repository.is_duplicate(session, user_id, "x", tweet_id):
+                print(f"[CONVEYOR] Skipped duplicate tweet: {tweet_id}")
+                return
+
+        # Extract metadata using XAdapter
+        scraped = await asyncio.to_thread(XAdapter.get_single_post, url)
+        if not scraped or not scraped.media_list:
+            print(f"[CONVEYOR] No media found in {url}")
             return
 
-    # Extract metadata using XAdapter
-    scraped = await asyncio.to_thread(XAdapter.get_single_post, url)
-    if not scraped or not scraped.media_list:
-        print(f"[CONVEYOR] No media found in {url}")
-        return
-
-    # Clean caption using The Brain (MessageCleaner)
-    clean_caption = MessageCleaner.clean(
-        text=scraped.caption,
-        mode=filter_mode,
-        signature=signature
-    )
-    safe_caption = html.escape(clean_caption)[:1024]
-
-    download_dir = Path(config.DOWNLOAD_DIR)
-    download_dir.mkdir(exist_ok=True)
-    safe_base_name = sanitize_filename(scraped.caption)
-
-    from .telegram_sender import send_media_resilient
-
-    # Process and deliver each media item via Resilient Sender
-    for i, media in enumerate(scraped.media_list):
-        m_url = media.get("url")
-        m_type = media.get("type", "image")
-
-        success = await send_media_resilient(
-            bot=bot,
-            target_chat=destination_channel,
-            media_url=m_url,
-            media_type=m_type,
-            caption=safe_caption,
-            thumbnail_url=media.get("thumbnail_url")
+        # Clean caption using The Brain (MessageCleaner)
+        clean_caption = MessageCleaner.clean(
+            text=scraped.caption,
+            mode=filter_mode,
+            signature=signature
         )
+        safe_caption = html.escape(clean_caption)[:1024]
 
-        if success:
-            async with AsyncSessionLocal() as session:
-                await Repository.mark_as_completed(session, user_id, "x", tweet_id)
-                if task_id:
-                    await Repository.update_source_stats(session, source_id=task_id, delivered_increment=1, last_error="None (Healthy)")
-            logger.info(f"[CONVEYOR] Successfully delivered {tweet_id} to {destination_channel}")
-        else:
-            err_msg = f"Delivery failed for {m_url[:50]}"
-            logger.error(f"[CONVEYOR] {err_msg}")
-            async with AsyncSessionLocal() as session:
-                await Repository.mark_as_failed(session, user_id, "x", tweet_id, err_msg)
-                if task_id:
-                    await Repository.update_source_stats(session, source_id=task_id, last_error=err_msg)
+        download_dir = Path(config.DOWNLOAD_DIR)
+        download_dir.mkdir(exist_ok=True)
+        safe_base_name = sanitize_filename(scraped.caption)
+
+        from .telegram_sender import send_media_resilient
+
+        # Process and deliver each media item via Resilient Sender
+        for i, media in enumerate(scraped.media_list):
+            m_url = media.get("url")
+            m_type = media.get("type", "image")
+
+            success = await send_media_resilient(
+                bot=bot,
+                target_chat=destination_channel,
+                media_url=m_url,
+                media_type=m_type,
+                caption=safe_caption,
+                thumbnail_url=media.get("thumbnail_url")
+            )
+
+            if success:
+                async with AsyncSessionLocal() as session:
+                    await Repository.mark_as_completed(session, user_id, "x", tweet_id)
+                    if task_id:
+                        await Repository.update_source_stats(session, source_id=task_id, delivered_increment=1, last_error="None (Healthy)")
+                logger.info(f"[CONVEYOR] Successfully delivered {tweet_id} to {destination_channel}")
+            else:
+                err_msg = f"Delivery failed for {m_url[:50]}"
+                logger.error(f"[CONVEYOR] {err_msg}")
+                async with AsyncSessionLocal() as session:
+                    await Repository.mark_as_failed(session, user_id, "x", tweet_id, err_msg)
+                    if task_id:
+                        await Repository.update_source_stats(session, source_id=task_id, last_error=err_msg)
+    finally:
+        _in_flight_ids.discard(tweet_id)
 
 async def conveyor_worker(bot: Bot) -> None:
     """Continuous background worker with human anti-ban jitter & 429 auto-wait."""
     global _is_first_post
-    logger.info("[CONVEYOR] Background worker started.")
+    logger.info("[CONVEYOR] Background worker started. Checking for orphaned queued items...")
+    try:
+        await rehydrate_conveyor_queue()
+    except Exception as rehydrate_err:
+        logger.error(f"[CONVEYOR] Startup rehydrate error: {rehydrate_err}")
+
     while True:
         item = await conveyor_queue.get()
         try:
@@ -160,8 +215,10 @@ async def conveyor_worker(bot: Bot) -> None:
 
             delivery_state["remaining_in_batch"] = conveyor_queue.qsize()
             if conveyor_queue.empty():
-                delivery_state["is_active"] = False
-                delivery_state["next_drop_at"] = None
+                rehydrated = await rehydrate_conveyor_queue()
+                if rehydrated == 0:
+                    delivery_state["is_active"] = False
+                    delivery_state["next_drop_at"] = None
 
         except TelegramRetryAfter as rate_err:
             wait_seconds = rate_err.retry_after + 15
@@ -183,6 +240,8 @@ async def conveyor_worker(bot: Bot) -> None:
         finally:
             conveyor_queue.task_done()
             if conveyor_queue.empty():
-                delivery_state["is_active"] = False
-                delivery_state["next_drop_at"] = None
+                rehydrated = await rehydrate_conveyor_queue()
+                if rehydrated == 0:
+                    delivery_state["is_active"] = False
+                    delivery_state["next_drop_at"] = None
 

@@ -47,9 +47,10 @@ async def btn_active_sources(message: types.Message):
             async with AsyncSessionLocal() as session:
                 pending = await Repository.get_pending_items(session, message.from_user.id, "x")
                 total_pending = await Repository.get_pending_count(session, message.from_user.id, "x")
+                total_failed = await Repository.get_failed_count(session, message.from_user.id, "x")
             queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
             await message.answer(
-                format_source_diagnostic_card(src) + queue_text,
+                format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + queue_text,
                 reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
                 parse_mode="HTML"
             )
@@ -87,6 +88,7 @@ async def cb_view_source(callback: types.CallbackQuery):
         src = res.scalar_one_or_none()
         pending = await Repository.get_pending_items(session, callback.from_user.id, "x")
         total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x")
+        total_failed = await Repository.get_failed_count(session, callback.from_user.id, "x")
 
     if not src:
         await callback.answer("Source not found.", show_alert=True)
@@ -95,7 +97,7 @@ async def cb_view_source(callback: types.CallbackQuery):
     await callback.answer()
     queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
     await callback.message.edit_text(
-        format_source_diagnostic_card(src) + queue_text,
+        format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + queue_text,
         reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0, has_multiple_sources=True),
         parse_mode="HTML"
     )
@@ -114,6 +116,7 @@ async def cb_refresh_source(callback: types.CallbackQuery):
         src = res.scalar_one_or_none()
         pending = await Repository.get_pending_items(session, callback.from_user.id, "x")
         total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x")
+        total_failed = await Repository.get_failed_count(session, callback.from_user.id, "x")
 
     if not src:
         await callback.answer("Source not found.", show_alert=True)
@@ -122,7 +125,7 @@ async def cb_refresh_source(callback: types.CallbackQuery):
     await callback.answer("🔄 Card refreshed")
     queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
     await callback.message.edit_text(
-        format_source_diagnostic_card(src) + queue_text,
+        format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + queue_text,
         reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
         parse_mode="HTML"
     )
@@ -135,6 +138,7 @@ async def cb_toggle_source(callback: types.CallbackQuery):
         src = await Repository.toggle_source(session, source_id, callback.from_user.id)
         pending = await Repository.get_pending_items(session, callback.from_user.id, "x")
         total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x")
+        total_failed = await Repository.get_failed_count(session, callback.from_user.id, "x")
 
     if not src:
         await callback.answer("Source not found.", show_alert=True)
@@ -144,7 +148,7 @@ async def cb_toggle_source(callback: types.CallbackQuery):
     await callback.answer(f"Feed @{src.target} is now {status_label}")
     queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
     await callback.message.edit_text(
-        format_source_diagnostic_card(src) + queue_text,
+        format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + queue_text,
         reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
         parse_mode="HTML"
     )
@@ -194,6 +198,7 @@ async def cb_check_source_now(callback: types.CallbackQuery):
 
             pending = await Repository.get_pending_items(session, callback.from_user.id, "x")
             total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x")
+            total_failed = await Repository.get_failed_count(session, callback.from_user.id, "x")
 
         # Reload fresh card after scan
         async with AsyncSessionLocal() as session:
@@ -203,7 +208,7 @@ async def cb_check_source_now(callback: types.CallbackQuery):
                 result_note = f"\n\n✅ <b>Radar Scan Complete:</b> Found {len(links)} posts, queued <b>{new_count} new</b> for delivery!"
                 queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
                 await callback.message.edit_text(
-                    format_source_diagnostic_card(src) + result_note + queue_text,
+                    format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + result_note + queue_text,
                     reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
                     parse_mode="HTML"
                 )
