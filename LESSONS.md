@@ -26,3 +26,9 @@ Format:
 - Cause: X hydrated the "Yes, view profile" modal after Playwright accessibility role lookup executed, so get_by_role failed to locate the button.
 - Fix: Replaced role lookup with a polling page.evaluate loop that queries button elements by innerText directly in the DOM and calls click().
 - Verified by: the nsfw oe worked yes
+
+## In-Memory Queue Starvation and DB Backlog Orphanage on Restart
+- Symptom: Diagnostic card reported "Idle (Waiting for new posts)" despite 18 pending items in SQLite, halting channel deliveries after restart.
+- Cause: `conveyor_queue` was an in-memory `asyncio.Queue` wiped on process termination; no rehydration mechanism queried `seen_items` in `DISCOVERED` state at startup.
+- Fix: Added `rehydrate_conveyor_queue()` at bot boot and on worker batch drain, with in-flight ID deduplication.
+- Verified by: it posted one from goddessofporno just now
