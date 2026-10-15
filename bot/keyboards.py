@@ -56,18 +56,37 @@ def get_source_item_kb(source_id: int, is_active: bool, has_pending: bool = Fals
         InlineKeyboardButton(text="🔄 Refresh", callback_data=f"src_refresh:{source_id}"),
         InlineKeyboardButton(text="⚡ Check Now", callback_data=f"src_check:{source_id}")
     )
+
+    # Row 2: Deep Harvest Trigger
+    builder.row(
+        InlineKeyboardButton(text="🚀 Deep Harvest (Batch Clone)", callback_data=f"src_deep_prompt:{source_id}")
+    )
     
-    # Row 2: Deliver Next (if pending posts exist)
+    # Row 3: Deliver Next (if pending posts exist)
     if has_pending:
         builder.row(
             InlineKeyboardButton(text="▶️ Deliver Next Now", callback_data=f"src_deliver_next:{source_id}")
         )
 
-    # Row 3: Pause and Delete
+    # Row 4: Pause and Delete
     builder.row(
         InlineKeyboardButton(text=toggle_text, callback_data=f"src_toggle:{source_id}"),
         InlineKeyboardButton(text="🗑️ Unlink Source", callback_data=f"src_del:{source_id}")
     )
+    return builder.as_markup()
+
+def get_deep_harvest_limits_kb(source_id: int) -> InlineKeyboardMarkup:
+    """Quantity selection for Deep Harvest link hunting."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📦 25 Posts", callback_data=f"src_deep_run:{source_id}:25"),
+        InlineKeyboardButton(text="📦 50 Posts", callback_data=f"src_deep_run:{source_id}:50")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📦 100 Posts", callback_data=f"src_deep_run:{source_id}:100"),
+        InlineKeyboardButton(text="🚀 Max Feed", callback_data=f"src_deep_run:{source_id}:200")
+    )
+    builder.row(InlineKeyboardButton(text="❌ Cancel", callback_data=f"src_refresh:{source_id}"))
     return builder.as_markup()
 
 def get_delivery_action_deck_kb(
