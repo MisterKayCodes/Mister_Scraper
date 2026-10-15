@@ -62,6 +62,23 @@ def format_source_diagnostic_card(src, failed_count: int = 0, pending_count: int
     else:
         delivery_line = "🚚 <b>Delivery:</b> Idle (Waiting for new posts)\n"
 
+    # Format last posted time
+    last_posted_display = "Never yet"
+    if src.last_posted_at:
+        now = now_wat()
+        diff = now - src.last_posted_at
+        total_secs = int(diff.total_seconds())
+        if total_secs < 60:
+            last_posted_display = f"Just now ({max(1, total_secs)}s ago)"
+        elif total_secs < 3600:
+            last_posted_display = f"{total_secs // 60}m ago"
+        elif total_secs < 86400:
+            hrs = total_secs // 3600
+            mins = (total_secs % 3600) // 60
+            last_posted_display = f"{hrs}h {mins}m ago"
+        else:
+            last_posted_display = src.last_posted_at.strftime("%b %d, %H:%M")
+
     card = (
         f"🔁 <b>Scraper Feed: @{src.target} ➔ {src.destination_channel_id}</b>\n"
         "───────────────────────────\n"
@@ -72,6 +89,7 @@ def format_source_diagnostic_card(src, failed_count: int = 0, pending_count: int
         f"⏱️ <b>Interval:</b> Every {interval_display}\n"
         f"⏳ <b>Next Check:</b> {countdown_str}\n"
         f"📦 <b>Delivered:</b> {src.total_delivered or 0} items\n"
+        f"🕒 <b>Last Posted:</b> {last_posted_display}\n"
         f"❌ <b>Failed:</b> {failed_count} items\n"
         f"⚠️ <b>Last Error:</b> {error_display}\n"
         "───────────────────────────"
