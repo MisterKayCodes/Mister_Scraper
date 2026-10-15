@@ -91,11 +91,21 @@ async def cb_deep_harvest_run(callback: types.CallbackQuery):
     from services.queue_worker import conveyor_queue
 
     try:
+        seen_ids = set()
+        async with AsyncSessionLocal() as session:
+            seen_ids = await Repository.get_seen_content_ids(
+                session=session,
+                user_id=callback.from_user.id,
+                platform="x",
+                source_profile=src.target
+            )
+
         # Phase 1: Link Hunter — Playwright continuous scroll
         links = await scrape_profile_media(
             username=src.target,
             limit=requested_limit,
-            status_callback=hunter_status
+            status_callback=hunter_status,
+            exclude_ids=seen_ids
         )
 
         async with AsyncSessionLocal() as session:

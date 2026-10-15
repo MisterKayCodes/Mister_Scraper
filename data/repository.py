@@ -42,6 +42,27 @@ class Repository:
         return result.scalar_one_or_none() is not None
 
     @staticmethod
+    async def get_seen_content_ids(
+        session: AsyncSession,
+        user_id: int,
+        platform: str = "x",
+        source_profile: Optional[str] = None
+    ) -> set[str]:
+        """Returns set of all content_ids already in the vault for this user (discovered, pending, or completed)."""
+        from sqlalchemy import func
+        conditions = [
+            SeenItem.user_id == user_id,
+            SeenItem.platform == platform
+        ]
+        if source_profile:
+            clean_target = source_profile.lstrip("@").strip().lower()
+            conditions.append(func.lower(SeenItem.source_profile) == clean_target)
+
+        stmt = select(SeenItem.content_id).where(*conditions)
+        result = await session.execute(stmt)
+        return {str(row[0]) for row in result.all()}
+
+    @staticmethod
     async def mark_as_discovered(session: AsyncSession, user_id: int, platform: str, content_id: str, source_profile: Optional[str] = None) -> SeenItem:
         clean_target = source_profile.lstrip("@").strip() if source_profile else None
         stmt = select(SeenItem).where(

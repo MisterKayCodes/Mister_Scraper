@@ -18,12 +18,14 @@ async def scrape_profile_media(
     username: str,
     limit: int = 10,
     status_callback: Optional[Callable[[str], Awaitable[None]]] = None,
-    mode: str = "media"
+    mode: str = "media",
+    exclude_ids: Optional[set[str]] = None
 ) -> List[str]:
     """
     The Eyes (Stealth Radar):
     Scrapes an X profile using Playwright stealth and GraphQL response interception.
     Returns a list of direct status URLs: ['https://x.com/user/status/123456789', ...]
+    If exclude_ids is provided, skips historical posts and digs deeper until 'limit' new posts are found.
     """
     if username.startswith("@"):
         username = username[1:]
@@ -36,6 +38,8 @@ async def scrape_profile_media(
 
     intercepted_tweet_ids = set()
     links = []
+    already_seen = {str(x) for x in exclude_ids} if exclude_ids else set()
+    skipped_seen_count = 0
 
     if status_callback:
         await status_callback("🚀 Initializing Stealth Radar...")
@@ -224,7 +228,7 @@ async def scrape_profile_media(
                 last_scroll_y = await page.evaluate("() => window.scrollY")
                 scroll_count = 0
 
-                while len(intercepted_tweet_ids) < limit:
+                while len(links) < limit:
                     scroll_count += 1
 
                     # 1. Incremental Harvest: Extract visible tweets on THIS scroll step
@@ -233,17 +237,26 @@ async def scrape_profile_media(
                         new_batch_count = 0
                         for it in visible_posts:
                             tid = it["id"]
-                            if tid not in intercepted_tweet_ids:
-                                intercepted_tweet_ids.add(tid)
-                                links.append(it["url"])
-                                new_batch_count += 1
-                                if len(links) >= limit:
-                                    break
+                            if tid in intercepted_tweet_ids:
+                                continue
+                            intercepted_tweet_ids.add(tid)
+
+                            if tid in already_seen:
+                                skipped_seen_count += 1
+                                continue
+
+                            links.append(it["url"])
+                            new_batch_count += 1
+                            if len(links) >= limit:
+                                break
                     except Exception as harvest_err:
                         new_batch_count = 0
 
-                    if status_callback and new_batch_count > 0:
-                        await status_callback(f"🔎 Found {len(links)}/{limit} posts (+{new_batch_count} this scroll)...")
+                    if status_callback and (new_batch_count > 0 or skipped_seen_count > 0):
+                        if already_seen:
+                            await status_callback(f"🔎 Found {len(links)}/{limit} new posts (skipped {skipped_seen_count} historical)...")
+                        else:
+                            await status_callback(f"🔎 Found {len(links)}/{limit} posts (+{new_batch_count} this scroll)...")
 
                     if len(links) >= limit:
                         break
