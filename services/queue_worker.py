@@ -33,6 +33,29 @@ rate_limit_state = {
     "last_error": None
 }
 
+# Global Delivery Engine Tracker for Live Card UI
+delivery_state = {
+    "is_active": False,
+    "current_target": "",
+    "next_drop_at": None,
+    "total_in_batch": 0,
+    "remaining_in_batch": 0
+}
+
+def get_delivery_status() -> dict:
+    """Returns active delivery state for diagnostic card rendering."""
+    status = dict(delivery_state)
+    status["queue_size"] = conveyor_queue.qsize()
+    if status["next_drop_at"]:
+        now = now_wat()
+        if now >= status["next_drop_at"]:
+            status["next_drop_secs"] = 0
+        else:
+            status["next_drop_secs"] = int((status["next_drop_at"] - now).total_seconds())
+    else:
+        status["next_drop_secs"] = 0
+    return status
+
 def get_rate_limit_status() -> dict:
     """Returns current rate limit state for diagnostic cards."""
     if rate_limit_state["is_limited"] and rate_limit_state["free_at"]:
@@ -126,9 +149,19 @@ async def conveyor_worker(bot: Bot) -> None:
             else:
                 jitter = random.uniform(45.0, 90.0)
 
+            # Update live UI delivery state
+            delivery_state["is_active"] = True
+            delivery_state["next_drop_at"] = now_wat() + timedelta(seconds=jitter)
+            delivery_state["remaining_in_batch"] = conveyor_queue.qsize() + 1
+
             logger.info(f"[CONVEYOR] Pacing next item. Sleeping for {jitter:.1f}s jitter...")
             await asyncio.sleep(jitter)
             await process_queue_item(bot, item)
+
+            delivery_state["remaining_in_batch"] = conveyor_queue.qsize()
+            if conveyor_queue.empty():
+                delivery_state["is_active"] = False
+                delivery_state["next_drop_at"] = None
 
         except TelegramRetryAfter as rate_err:
             wait_seconds = rate_err.retry_after + 15
@@ -149,4 +182,7 @@ async def conveyor_worker(bot: Bot) -> None:
             logger.error(f"[CONVEYOR] Worker error: {e}")
         finally:
             conveyor_queue.task_done()
+            if conveyor_queue.empty():
+                delivery_state["is_active"] = False
+                delivery_state["next_drop_at"] = None
 

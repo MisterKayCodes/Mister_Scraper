@@ -124,7 +124,7 @@ def format_source_diagnostic_card(src) -> str:
 
     error_display = f"<code>{src.last_error}</code>" if src.last_error and src.last_error != "None (Healthy)" else "None (Healthy) 🟢"
 
-    from services.queue_worker import get_rate_limit_status
+    from services.queue_worker import get_rate_limit_status, get_delivery_status
     rl_status = get_rate_limit_status()
     if rl_status.get("is_limited") and rl_status.get("free_at"):
         now = now_wat()
@@ -132,12 +132,28 @@ def format_source_diagnostic_card(src) -> str:
         if remaining_secs > 0:
             error_display = f"⚠️ Rate Limited (Free in {remaining_secs // 60}m {remaining_secs % 60}s) ⏳"
 
+    # Query live Conveyor delivery state
+    del_status = get_delivery_status()
+    delivery_line = ""
+    if del_status.get("is_active"):
+        rem = del_status.get("remaining_in_batch", 0)
+        drop_secs = del_status.get("next_drop_secs", 0)
+        delivery_line = (
+            f"🚚 <b>Delivery:</b> DRIPPING ({rem} posts queued)\n"
+            f"⏱️ <b>Next Drop:</b> In ~{drop_secs}s (human jitter)\n"
+        )
+    elif del_status.get("queue_size", 0) > 0:
+        delivery_line = f"🚚 <b>Delivery:</b> {del_status['queue_size']} posts queued in Conveyor\n"
+    else:
+        delivery_line = "🚚 <b>Delivery:</b> Idle (Waiting for new posts)\n"
+
     card = (
         f"🔁 <b>Scraper Feed: @{src.target} ➔ {src.destination_channel_id}</b>\n"
         "───────────────────────────\n"
         f"⚡ <b>Status:</b> {status}\n"
         f"🔗 <b>Source:</b> <code>x.com/{src.target}</code>\n"
         f"📢 <b>Destination:</b> <code>{src.destination_channel_id}</code>\n"
+        f"{delivery_line}"
         f"⏱️ <b>Interval:</b> Every {interval_display}\n"
         f"⏳ <b>Next Check:</b> {countdown_str}\n"
         f"📦 <b>Delivered:</b> {src.total_delivered or 0} items\n"
