@@ -127,7 +127,9 @@ async def process_queue_item(bot: Bot, item: Tuple) -> None:
         # Extract metadata using XAdapter
         scraped = await asyncio.to_thread(XAdapter.get_single_post, url)
         if not scraped or not scraped.media_list:
-            print(f"[CONVEYOR] No media found in {url}")
+            logger.info(f"[CONVEYOR] No media found in {url} (text-only or empty). Clearing from pending queue.")
+            async with AsyncSessionLocal() as session:
+                await Repository.mark_as_completed(session, user_id, "x", tweet_id, media_type="none")
             return
 
         # Clean caption using The Brain (MessageCleaner)
