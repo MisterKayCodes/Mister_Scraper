@@ -88,21 +88,31 @@ def _normalize_fxtwitter_payload(tweet: Dict[str, Any], original_url: str) -> Di
             # Sort by bitrate ascending
             mp4_variants.sort(key=lambda x: x.get("bitrate", 0))
             
+            # Telegram Bot API hard ceiling is 50MB. Safe budget = 47 MB (394,264,576 bits)
+            # If duration is known, calculate max bitrate so file stays <= 47MB
+            max_safe_bitrate = 5_500_000
+            dur_sec = float(duration) if duration else 0
+            if dur_sec > 0:
+                calc_br = int((47 * 1024 * 1024 * 8) / dur_sec)
+                max_safe_bitrate = min(max_safe_bitrate, calc_br)
+
+            # Filter candidates within safe bitrate ceiling
+            safe_variants = [var for var in mp4_variants if var.get("bitrate", 0) <= max_safe_bitrate]
+            candidate_pool = safe_variants if safe_variants else [mp4_variants[0]]
+
             optimal = None
             if is_portrait:
-                # Vertical/Phone video: prefer crisp portrait HD (720x1280 or 1080x1920) up to 5.5 Mbps
-                under_5m = [var for var in mp4_variants if var.get("bitrate", 0) <= 5_500_000]
-                optimal = under_5m[-1] if under_5m else mp4_variants[-1]
+                # Vertical/Phone video: prefer highest quality safe portrait variant
+                optimal = candidate_pool[-1]
             else:
-                # Landscape video: prefer 720p HD between 1.2M and 4.0M to avoid 1080p upload timeouts
-                for var in mp4_variants:
+                # Landscape video: prefer safe HD between 1.2M and 3.5M
+                for var in candidate_pool:
                     br = var.get("bitrate", 0)
-                    if 1_200_000 <= br <= 4_000_000:
+                    if 1_200_000 <= br <= 3_500_000:
                         optimal = var
                         break
                 if not optimal:
-                    under_5m = [var for var in mp4_variants if var.get("bitrate", 0) <= 5_000_000]
-                    optimal = under_5m[-1] if under_5m else mp4_variants[0]
+                    optimal = candidate_pool[-1]
             
             chosen_url = optimal.get("url", chosen_url)
             
@@ -112,7 +122,7 @@ def _normalize_fxtwitter_payload(tweet: Dict[str, Any], original_url: str) -> Di
                 chosen_w = int(res_match.group(1))
                 chosen_h = int(res_match.group(2))
                 
-            logger.info(f"[EYES] Selected stream {chosen_w}x{chosen_h} @ {optimal.get('bitrate', 0)} bps (portrait={is_portrait}) for video ID {v.get('id')}")
+            logger.info(f"[EYES] Selected stream {chosen_w}x{chosen_h} @ {optimal.get('bitrate', 0)} bps (dur={dur_sec}s, max_safe={max_safe_bitrate} bps, portrait={is_portrait}) for video ID {v.get('id')}")
 
         media_extended.append({
             "type": "video",

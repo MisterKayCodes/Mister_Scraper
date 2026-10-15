@@ -118,6 +118,109 @@ async def send_media_resilient(
 
     # Calculate dynamic timeout based on file size (minimum 600s, + 25s per MB)
     file_size_mb = local_path.stat().st_size / (1024 * 1024)
+    logger.info(f"[SENDER] Local file size: {file_size_mb:.2f} MB (Path: {local_path.name})")
+
+    compressed_path = None
+    # -------------------------------------------------------------
+    # PRE-FLIGHT GUARD & AUTO-COMPRESSION (Telegram Bot API 50MB Limit)
+    # -------------------------------------------------------------
+    if is_video and file_size_mb >= 49.0:
+        logger.warning(f"[SENDER] Video {local_path.name} is {file_size_mb:.2f} MB (>= 49 MB). Engaging auto-compression...")
+        if status_msg:
+            try:
+                await status_msg.edit_text("⚙️ <i>Video exceeds 50MB. Compressing to fit Telegram limit...</i>", parse_mode="HTML")
+            except Exception:
+                pass
+
+        try:
+            import subprocess
+            import imageio_ffmpeg
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+            compressed_path = download_dir / f"compressed_{timestamp}.mp4"
+
+            # Target 42 MB to comfortably fit under 50 MB
+            # target_bitrate = (42MB * 8) / duration
+            dur = max(10, int(duration or 30))
+            target_kbps = max(350, int((42 * 1024 * 8) / dur) - 128)  # minus 128k audio
+
+            cmd = [
+                ffmpeg_exe,
+                "-y",
+                "-i", str(local_path),
+                "-vf", "scale='min(1280,iw)':-2",
+                "-c:v", "libx264",
+                "-b:v", f"{target_kbps}k",
+                "-maxrate", f"{int(target_kbps * 1.3)}k",
+                "-bufsize", f"{target_kbps * 2}k",
+                "-preset", "veryfast",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-movflags", "+faststart",
+                str(compressed_path)
+            ]
+
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=180
+            )
+
+            if proc.returncode == 0 and compressed_path.exists():
+                comp_size_mb = compressed_path.stat().st_size / (1024 * 1024)
+                logger.info(f"[SENDER] Compressed {file_size_mb:.2f} MB -> {comp_size_mb:.2f} MB successfully.")
+                if comp_size_mb < 49.5:
+                    local_path = compressed_path
+                    file_size_mb = comp_size_mb
+                else:
+                    logger.warning(f"[SENDER] Compressed size still oversized: {comp_size_mb:.2f} MB")
+            else:
+                logger.warning(f"[SENDER] ffmpeg exited with returncode {proc.returncode}")
+        except Exception as comp_err:
+            logger.error(f"[SENDER] Auto-compression failed: {comp_err}")
+
+    # If still > 49.5 MB after compression attempt, activate Option A: Fallback Link Button
+    if is_video and file_size_mb >= 49.5:
+        logger.warning(f"[SENDER] Video still exceeds 50MB ({file_size_mb:.2f} MB). Executing Option A Fallback...")
+        try:
+            # Build inline button to original post/video
+            markup = None
+            orig_tweet_url = media_url
+            if "status/" in caption or "x.com" in media_url or "twimg" in media_url:
+                markup = types.InlineKeyboardMarkup(
+                    inline_keyboard=[[
+                        types.InlineKeyboardButton(
+                            text="🔗 Watch Full HD Video on X",
+                            url=media_url if "x.com" in media_url else f"https://x.com"
+                        )
+                    ]]
+                )
+
+            fallback_text = f"📹 <b>HD Video (Oversized: {file_size_mb:.1f} MB)</b>\n\n{caption}"
+            if len(fallback_text) > 4000:
+                fallback_text = fallback_text[:4000]
+
+            sent_msg = await bot.send_message(
+                chat_id=target_chat,
+                text=fallback_text,
+                reply_markup=markup,
+                parse_mode="HTML",
+                disable_web_page_preview=False
+            )
+            logger.info(f"[SENDER] Option A Fallback post delivered to {target_chat} (msg_id={sent_msg.message_id})")
+            return "SUCCESS_FALLBACK"
+        except Exception as fallback_err:
+            logger.error(f"[SENDER] Option A Fallback failed: {fallback_err}")
+            return False
+        finally:
+            for p in [local_path, compressed_path]:
+                if p and p.exists():
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+
     dynamic_timeout = max(600, int(file_size_mb * 25))
     # Download and scale thumbnail locally (Telegram strictly requires max 320x320 pixels JPEG)
     thumb_path = None
@@ -140,7 +243,8 @@ async def send_media_resilient(
             logger.warning(f"[SENDER] Failed to prepare thumbnail: {thumb_err}")
 
     for attempt in range(1, max_retries + 1):
-        upload_tracker = TelegramProgressTracker(status_msg, action_title="Uploading to Telegram (720p HD)") if status_msg else None
+        action_label = "Uploading to Telegram (HD)" if not compressed_path else "Uploading Compressed Video"
+        upload_tracker = TelegramProgressTracker(status_msg, action_title=action_label) if status_msg else None
         
         try:
             file_input = ProgressFSInputFile(local_path, tracker=upload_tracker)
@@ -195,7 +299,7 @@ async def send_media_resilient(
             pass
 
     # Final cleanup of temp files
-    for p in [local_path, thumb_path]:
+    for p in [local_path, compressed_path, thumb_path]:
         if p and p.exists():
             try:
                 p.unlink()
@@ -203,3 +307,4 @@ async def send_media_resilient(
                 pass
 
     return False
+
