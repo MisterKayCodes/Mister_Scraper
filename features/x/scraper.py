@@ -173,40 +173,113 @@ async def scrape_profile_media(
                         await asyncio.sleep(2)
                         break
 
-                # Scroll to tease lazy-loaded content
-                for i in range(4):
-                    if status_callback:
-                        await status_callback(f"🔄 Scanning feed... ({len(intercepted_tweet_ids)} via GraphQL so far)")
-                    await page.mouse.move(random.randint(100, 600), random.randint(100, 600))
-                    await asyncio.sleep(0.3)
-                    await page.evaluate("window.scrollBy(0, 1200)")
-                    await asyncio.sleep(random.uniform(1.5, 2.5))
+                # Continuous Link Hunter: incremental extraction on every scroll step
+                # Extracts status IDs from article[data-testid="tweet"] to capture 100% of posts AND reposts
+                EXTRACT_TIMELINE_JS = '''
+                (targetUser) => {
+                    const articles = document.querySelectorAll('article[data-testid="tweet"]');
+                    const items = [];
+                    for (const article of articles) {
+                        const timeEl = article.querySelector('time');
+                        if (!timeEl) continue;
+                        const anchor = timeEl.closest('a');
+                        if (!anchor) continue;
+                        const href = anchor.getAttribute('href');
+                        if (!href || !href.includes('/status/')) continue;
 
-                # Primary: DOM extraction — pull all status links rendered on the page
-                if status_callback:
-                    await status_callback("🔎 Extracting post links from DOM...")
-                try:
-                    dom_hrefs = await page.evaluate('''() => {
-                        return Array.from(document.querySelectorAll('a[href*="/status/"]')).map(a => a.href);
-                    }''')
-                    for href in dom_hrefs:
-                        base = href.split('?')[0].rstrip('/')
-                        if f'/{username.lower()}/' in base.lower() and '/status/' in base:
-                            if not any(x in base for x in ['/photo/', '/video/', '/analytics']):
-                                tid = base.split('/status/')[-1]
-                                if tid.isdigit() and len(tid) > 10:
-                                    intercepted_tweet_ids.add(tid)
-                except Exception as dom_err:
-                    if status_callback:
-                        await status_callback(f"⚠️ DOM extraction error: {dom_err}")
+                        const match = href.match(/\\/([^\\/]+)\\/status\\/(\\d+)/);
+                        if (!match) continue;
 
-                if status_callback:
-                    await status_callback(f"✅ Found {len(intercepted_tweet_ids)} unique posts")
+                        const author = match[1];
+                        const tweetId = match[2];
 
-                for tid in intercepted_tweet_ids:
-                    links.append(f"https://x.com/{username}/status/{tid}")
+                        // Identify reposts / retweets
+                        const socialContext = article.querySelector('[data-testid="socialContext"]');
+                        const isRepost = Boolean(socialContext) || (author.toLowerCase() !== targetUser.toLowerCase());
+
+                        items.push({
+                            id: tweetId,
+                            url: `https://x.com/${author}/status/${tweetId}`,
+                            author: author,
+                            is_repost: isRepost
+                        });
+                    }
+                    return items;
+                }
+                '''
+
+                stale_strikes = 0
+                max_stale_strikes = 3
+                last_scroll_y = await page.evaluate("() => window.scrollY")
+                scroll_count = 0
+
+                while len(intercepted_tweet_ids) < limit:
+                    scroll_count += 1
+
+                    # 1. Incremental Harvest: Extract visible tweets on THIS scroll step
+                    try:
+                        visible_posts = await page.evaluate(EXTRACT_TIMELINE_JS, username.lower())
+                        new_batch_count = 0
+                        for it in visible_posts:
+                            tid = it["id"]
+                            if tid not in intercepted_tweet_ids:
+                                intercepted_tweet_ids.add(tid)
+                                links.append(it["url"])
+                                new_batch_count += 1
+                                if len(links) >= limit:
+                                    break
+                    except Exception as harvest_err:
+                        new_batch_count = 0
+
+                    if status_callback and new_batch_count > 0:
+                        await status_callback(f"🔎 Found {len(links)}/{limit} posts (+{new_batch_count} this scroll)...")
+
                     if len(links) >= limit:
                         break
+
+                    # 2. Check End-of-Feed Convergence
+                    metrics = await page.evaluate('''() => ({
+                        scrollY: window.scrollY,
+                        innerHeight: window.innerHeight,
+                        scrollHeight: document.documentElement.scrollHeight
+                    })''')
+                    is_at_bottom = (metrics["scrollY"] + metrics["innerHeight"]) >= (metrics["scrollHeight"] - 120)
+                    scroll_stalled = abs(metrics["scrollY"] - last_scroll_y) < 10
+                    last_scroll_y = metrics["scrollY"]
+
+                    if new_batch_count == 0 and (is_at_bottom or scroll_stalled):
+                        stale_strikes += 1
+                        if status_callback:
+                            await status_callback(f"⚠️ Feed stalled (Strike {stale_strikes}/{max_stale_strikes})...")
+
+                        if stale_strikes == 2:
+                            # Rescue nudge: scroll UP 350px, wait, scroll DOWN 700px
+                            await page.mouse.wheel(0, -350)
+                            await asyncio.sleep(1.2)
+                            await page.mouse.wheel(0, 700)
+                            await asyncio.sleep(2.0)
+                            continue
+
+                        if stale_strikes >= max_stale_strikes:
+                            if status_callback:
+                                await status_callback(f"🏁 End of feed reached ({len(links)} posts captured).")
+                            break
+                    else:
+                        stale_strikes = 0
+
+                    # 3. Human Pacing & Movement
+                    await page.mouse.move(random.randint(250, 750), random.randint(200, 600))
+                    scroll_delta = random.randint(650, 950)
+                    await page.mouse.wheel(0, scroll_delta)
+
+                    # Periodic reading hesitation every 8 scrolls
+                    if scroll_count % 8 == 0:
+                        await asyncio.sleep(random.uniform(2.5, 4.0))
+                    else:
+                        await asyncio.sleep(random.uniform(1.2, 2.2))
+
+                if status_callback:
+                    await status_callback(f"✅ Hunter Complete: Collected {len(links)} posts.")
 
             except Exception as e:
                 if status_callback:
