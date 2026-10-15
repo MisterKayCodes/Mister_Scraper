@@ -59,7 +59,7 @@ def get_sources_selector_kb(sources: list) -> InlineKeyboardMarkup:
         )
     return builder.as_markup()
 
-def get_source_item_kb(source_id: int, is_active: bool, has_pending: bool = False) -> InlineKeyboardMarkup:
+def get_source_item_kb(source_id: int, is_active: bool, has_pending: bool = False, has_multiple_sources: bool = False) -> InlineKeyboardMarkup:
     """Controls for a single linked source pair: instant Fast Refresh, Stealth Check Now, and Deliver Next."""
     builder = InlineKeyboardBuilder()
     toggle_text = "⏸️ Pause Feed" if is_active else "▶️ Resume Feed"
@@ -86,6 +86,13 @@ def get_source_item_kb(source_id: int, is_active: bool, has_pending: bool = Fals
         InlineKeyboardButton(text=toggle_text, callback_data=f"src_toggle:{source_id}"),
         InlineKeyboardButton(text="🗑️ Unlink Source", callback_data=f"src_del:{source_id}")
     )
+
+    # Row 5: Back to list (only shown when opened from multi-source picker)
+    if has_multiple_sources:
+        builder.row(
+            InlineKeyboardButton(text="◀️ Back to Sources", callback_data="src_back_to_list")
+        )
+
     return builder.as_markup()
 
 def get_deep_harvest_limits_kb(source_id: int) -> InlineKeyboardMarkup:

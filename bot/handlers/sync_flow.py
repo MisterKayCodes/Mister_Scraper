@@ -162,15 +162,20 @@ def format_source_diagnostic_card(src) -> str:
     )
     return card
 
-def format_queue_preview(pending_items: list, target_username: str) -> str:
-    """Renders a readable summary of items waiting in queue to be delivered."""
-    if not pending_items:
+def format_queue_preview(pending_items: list, target_username: str, total_count: int = 0) -> str:
+    """Renders a readable summary of items waiting in queue to be delivered.
+    
+    pending_items: up to 10 rows fetched for display links only.
+    total_count: the true DB count — always shown in the header.
+    """
+    if not pending_items and total_count == 0:
         return ""
-    lines = [f"\n\n📬 <b>Delivery Queue ({len(pending_items)} pending):</b>"]
-    for i, item in enumerate(pending_items[:5], 1):
+    display_total = total_count if total_count > 0 else len(pending_items)
+    lines = [f"\n\n📬 <b>Delivery Queue ({display_total} pending):</b>"]
+    for i, item in enumerate(pending_items[:10], 1):
         lines.append(f"{i}. <code>x.com/{target_username}/status/{item.content_id}</code>")
-    if len(pending_items) > 5:
-        lines.append(f"<i>...and {len(pending_items) - 5} more queued</i>")
+    if display_total > len(pending_items):
+        lines.append(f"<i>...and {display_total - len(pending_items)} more queued</i>")
     return "\n".join(lines)
 
 @router.message(F.text == "📋 Active Sources")
@@ -201,10 +206,11 @@ async def btn_active_sources(message: types.Message, state: FSMContext):
         for src in sources:
             async with AsyncSessionLocal() as session:
                 pending = await Repository.get_pending_items(session, message.from_user.id, "x")
-            queue_text = format_queue_preview(pending, src.target)
+                total_pending = await Repository.get_pending_count(session, message.from_user.id, "x")
+            queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
             await message.answer(
                 format_source_diagnostic_card(src) + queue_text,
-                reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=len(pending) > 0),
+                reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
                 parse_mode="HTML"
             )
 
@@ -217,16 +223,36 @@ async def cb_view_source(callback: types.CallbackQuery):
         res = await session.execute(stmt)
         src = res.scalar_one_or_none()
         pending = await Repository.get_pending_items(session, callback.from_user.id, "x")
+        total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x")
 
     if not src:
         await callback.answer("Source not found.", show_alert=True)
         return
 
     await callback.answer()
-    queue_text = format_queue_preview(pending, src.target)
+    queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
     await callback.message.edit_text(
         format_source_diagnostic_card(src) + queue_text,
-        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=len(pending) > 0),
+        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0, has_multiple_sources=True),
+        parse_mode="HTML"
+    )
+
+@router.callback_query(F.data == "src_back_to_list")
+async def cb_src_back_to_list(callback: types.CallbackQuery):
+    """Returns user to the inline source selector from inside a diagnostic card."""
+    async with AsyncSessionLocal() as session:
+        sources = await Repository.get_user_sources(session, callback.from_user.id)
+
+    await callback.answer()
+    if not sources:
+        await callback.message.edit_text("📋 No active sources found.", parse_mode="HTML")
+        return
+
+    from bot.keyboards import get_sources_selector_kb
+    await callback.message.edit_text(
+        f"📋 <b>Your Active Sources ({len(sources)}):</b>\n"
+        "Tap a source below to manage its cloning pipeline, check queue, or Deep Harvest:",
+        reply_markup=get_sources_selector_kb(sources),
         parse_mode="HTML"
     )
 
@@ -239,16 +265,17 @@ async def cb_refresh_source(callback: types.CallbackQuery):
         res = await session.execute(stmt)
         src = res.scalar_one_or_none()
         pending = await Repository.get_pending_items(session, callback.from_user.id, "x")
+        total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x")
 
     if not src:
         await callback.answer("Source not found.", show_alert=True)
         return
 
     await callback.answer("🔄 Card refreshed")
-    queue_text = format_queue_preview(pending, src.target)
+    queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
     await callback.message.edit_text(
         format_source_diagnostic_card(src) + queue_text,
-        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=len(pending) > 0),
+        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
         parse_mode="HTML"
     )
 
@@ -258,6 +285,7 @@ async def cb_toggle_source(callback: types.CallbackQuery):
     async with AsyncSessionLocal() as session:
         src = await Repository.toggle_source(session, source_id, callback.from_user.id)
         pending = await Repository.get_pending_items(session, callback.from_user.id, "x")
+        total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x")
 
     if not src:
         await callback.answer("Source not found.", show_alert=True)
@@ -265,10 +293,10 @@ async def cb_toggle_source(callback: types.CallbackQuery):
 
     status_label = "Resumed ▶️" if src.is_active else "Paused ⏸️"
     await callback.answer(f"Feed @{src.target} is now {status_label}")
-    queue_text = format_queue_preview(pending, src.target)
+    queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
     await callback.message.edit_text(
         format_source_diagnostic_card(src) + queue_text,
-        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=len(pending) > 0),
+        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
         parse_mode="HTML"
     )
 
@@ -315,6 +343,7 @@ async def cb_check_source_now(callback: types.CallbackQuery):
 
             # Fetch fresh pending items
             pending = await Repository.get_pending_items(session, callback.from_user.id, "x")
+            total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x")
 
         # Reload fresh card after scan
         async with AsyncSessionLocal() as session:
@@ -322,10 +351,10 @@ async def cb_check_source_now(callback: types.CallbackQuery):
             src = res.scalar_one_or_none()
             if src:
                 result_note = f"\n\n✅ <b>Radar Scan Complete:</b> Found {len(links)} posts, queued <b>{new_count} new</b> for delivery!"
-                queue_text = format_queue_preview(pending, src.target)
+                queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
                 await callback.message.edit_text(
                     format_source_diagnostic_card(src) + result_note + queue_text,
-                    reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=len(pending) > 0),
+                    reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
                     parse_mode="HTML"
                 )
 
@@ -449,6 +478,7 @@ async def cb_deep_harvest_run(callback: types.CallbackQuery):
                     ))
 
             pending = await Repository.get_pending_items(session, callback.from_user.id, "x")
+            total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x")
 
         # Browser closed completely! Delivery engine now takes over
         summary_text = (
@@ -458,10 +488,10 @@ async def cb_deep_harvest_run(callback: types.CallbackQuery):
             f"🚀 Destination: <code>{src.destination_channel_id}</code>\n\n"
             "<i>The pure HTTP Delivery Engine is now drip-feeding these posts to your channel with human anti-ban pacing!</i>"
         )
-        queue_text = format_queue_preview(pending, src.target)
+        queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
         await callback.message.edit_text(
             format_source_diagnostic_card(src) + f"\n\n{summary_text}" + queue_text,
-            reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=len(pending) > 0),
+            reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
             parse_mode="HTML"
         )
 
@@ -517,11 +547,12 @@ async def cb_deliver_next_now(callback: types.CallbackQuery):
         res = await session.execute(stmt)
         src = res.scalar_one_or_none()
         remaining = await Repository.get_pending_items(session, callback.from_user.id, "x")
+        total_remaining = await Repository.get_pending_count(session, callback.from_user.id, "x")
 
-    queue_text = format_queue_preview(remaining, src.target)
+    queue_text = format_queue_preview(remaining, src.target, total_count=total_remaining)
     await callback.message.edit_text(
         format_source_diagnostic_card(src) + f"\n\n✅ <b>Delivered post {item_to_deliver.content_id} to {src.destination_channel_id}!</b>" + queue_text,
-        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=len(remaining) > 0),
+        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_remaining > 0),
         parse_mode="HTML"
     )
 
