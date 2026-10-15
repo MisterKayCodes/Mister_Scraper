@@ -88,10 +88,24 @@ async def rehydrate_conveyor_queue() -> int:
             logger.info(f"[CONVEYOR] Rehydrated {count} pending items into conveyor queue.")
         return count
 
-def get_delivery_status() -> dict:
-    """Returns active delivery state for diagnostic card rendering."""
+def get_delivery_status(target: Optional[str] = None) -> dict:
+    """Returns active delivery state for diagnostic card rendering, scoped by target if requested."""
     status = dict(delivery_state)
-    status["queue_size"] = conveyor_queue.qsize()
+    clean_target = target.lstrip("@").strip().lower() if target else None
+
+    if clean_target and hasattr(conveyor_queue, "_queue"):
+        # Count only items in the in-memory queue belonging to this target
+        target_in_queue = sum(1 for q_item in conveyor_queue._queue if clean_target in str(q_item[0]).lower())
+        is_cur = clean_target in status.get("current_target", "").lower()
+        status["queue_size"] = target_in_queue
+        # If currently dripping this target, remaining in batch is queue + 1 (the one currently being processed)
+        status["remaining_in_batch"] = target_in_queue + (1 if (status["is_active"] and is_cur) else 0)
+        # Only show dripping if the active post belongs to this target or this target has items in queue
+        if not is_cur and target_in_queue == 0:
+            status["is_active"] = False
+    else:
+        status["queue_size"] = conveyor_queue.qsize()
+
     if status["next_drop_at"]:
         now = now_wat()
         if now >= status["next_drop_at"]:
@@ -209,12 +223,19 @@ async def conveyor_worker(bot: Bot) -> None:
             else:
                 jitter = random.uniform(45.0, 90.0)
 
+            # Extract target from url e.g. x.com/target/status/...
+            url = str(item[0])
+            clean_url = url.split("?")[0]
+            parts = [p for p in clean_url.replace("https://", "").replace("http://", "").split("/") if p]
+            current_target = parts[1] if (len(parts) >= 3 and parts[0].endswith("x.com")) else ""
+
             # Update live UI delivery state
             delivery_state["is_active"] = True
+            delivery_state["current_target"] = current_target
             delivery_state["next_drop_at"] = now_wat() + timedelta(seconds=jitter)
             delivery_state["remaining_in_batch"] = conveyor_queue.qsize() + 1
 
-            logger.info(f"[CONVEYOR] Pacing next item. Sleeping for {jitter:.1f}s jitter...")
+            logger.info(f"[CONVEYOR] Pacing next item (@{current_target}). Sleeping for {jitter:.1f}s jitter...")
             await asyncio.sleep(jitter)
             await process_queue_item(bot, item)
 

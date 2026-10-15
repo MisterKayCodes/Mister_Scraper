@@ -45,8 +45,8 @@ def format_source_diagnostic_card(src, failed_count: int = 0, pending_count: int
         if remaining_secs > 0:
             error_display = f"⚠️ Rate Limited (Free in {remaining_secs // 60}m {remaining_secs % 60}s) ⏳"
 
-    # Query live Conveyor delivery state
-    del_status = get_delivery_status()
+    # Query live Conveyor delivery state for THIS target specifically
+    del_status = get_delivery_status(target=src.target)
     delivery_line = ""
     if del_status.get("is_active"):
         rem = del_status.get("remaining_in_batch", 0)

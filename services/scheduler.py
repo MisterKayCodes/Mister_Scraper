@@ -49,8 +49,8 @@ async def run_scheduler_loop() -> None:
                             tweet_id = link.split("?")[0].rstrip("/").split("/")[-1]
                             # Check dedup: skip if already COMPLETED
                             if not await Repository.is_duplicate(session, src.user_id, "x", tweet_id):
-                                # Mark as discovered so we know it was seen
-                                await Repository.mark_as_discovered(session, src.user_id, "x", tweet_id)
+                                # Mark as discovered with source_profile so we know whose item it is
+                                await Repository.mark_as_discovered(session, src.user_id, "x", tweet_id, source_profile=src.target)
                                 # Push to conveyor belt queue with src.id as task_id
                                 await conveyor_queue.put((
                                     link,

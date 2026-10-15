@@ -42,7 +42,8 @@ class Repository:
         return result.scalar_one_or_none() is not None
 
     @staticmethod
-    async def mark_as_discovered(session: AsyncSession, user_id: int, platform: str, content_id: str) -> SeenItem:
+    async def mark_as_discovered(session: AsyncSession, user_id: int, platform: str, content_id: str, source_profile: Optional[str] = None) -> SeenItem:
+        clean_target = source_profile.lstrip("@").strip() if source_profile else None
         stmt = select(SeenItem).where(
             SeenItem.user_id == user_id,
             SeenItem.platform == platform,
@@ -51,22 +52,43 @@ class Repository:
         result = await session.execute(stmt)
         item = result.scalar_one_or_none()
         if not item:
-            item = SeenItem(user_id=user_id, platform=platform, content_id=str(content_id), status="DISCOVERED")
+            item = SeenItem(
+                user_id=user_id,
+                platform=platform,
+                content_id=str(content_id),
+                source_profile=clean_target,
+                status="DISCOVERED"
+            )
             session.add(item)
             await session.commit()
             await session.refresh(item)
+        elif clean_target and not item.source_profile:
+            item.source_profile = clean_target
+            await session.commit()
         return item
 
     @staticmethod
-    async def get_pending_items(session: AsyncSession, user_id: int, platform: str = "x", limit: int = 10) -> List[SeenItem]:
+    async def get_pending_items(
+        session: AsyncSession,
+        user_id: int,
+        platform: str = "x",
+        limit: int = 10,
+        source_profile: Optional[str] = None
+    ) -> List[SeenItem]:
         """Fetch discovered/pending items that have not yet been marked completed or failed."""
+        from sqlalchemy import func
+        conditions = [
+            SeenItem.user_id == user_id,
+            SeenItem.platform == platform,
+            SeenItem.status.in_(["DISCOVERED", "PENDING", "QUEUED"])
+        ]
+        if source_profile:
+            clean_target = source_profile.lstrip("@").strip().lower()
+            conditions.append(func.lower(SeenItem.source_profile) == clean_target)
+
         stmt = (
             select(SeenItem)
-            .where(
-                SeenItem.user_id == user_id,
-                SeenItem.platform == platform,
-                SeenItem.status.in_(["DISCOVERED", "PENDING", "QUEUED"])
-            )
+            .where(*conditions)
             .order_by(SeenItem.created_at.asc())
             .limit(limit)
         )
@@ -74,30 +96,44 @@ class Repository:
         return list(result.scalars().all())
 
     @staticmethod
-    async def get_pending_count(session: AsyncSession, user_id: int, platform: str = "x") -> int:
+    async def get_pending_count(
+        session: AsyncSession,
+        user_id: int,
+        platform: str = "x",
+        source_profile: Optional[str] = None
+    ) -> int:
         from sqlalchemy import func
-        stmt = (
-            select(func.count(SeenItem.id))
-            .where(
-                SeenItem.user_id == user_id,
-                SeenItem.platform == platform,
-                SeenItem.status.in_(["DISCOVERED", "PENDING", "QUEUED"])
-            )
-        )
+        conditions = [
+            SeenItem.user_id == user_id,
+            SeenItem.platform == platform,
+            SeenItem.status.in_(["DISCOVERED", "PENDING", "QUEUED"])
+        ]
+        if source_profile:
+            clean_target = source_profile.lstrip("@").strip().lower()
+            conditions.append(func.lower(SeenItem.source_profile) == clean_target)
+
+        stmt = select(func.count(SeenItem.id)).where(*conditions)
         result = await session.execute(stmt)
         return result.scalar() or 0
 
     @staticmethod
-    async def get_failed_count(session: AsyncSession, user_id: int, platform: str = "x") -> int:
+    async def get_failed_count(
+        session: AsyncSession,
+        user_id: int,
+        platform: str = "x",
+        source_profile: Optional[str] = None
+    ) -> int:
         from sqlalchemy import func
-        stmt = (
-            select(func.count(SeenItem.id))
-            .where(
-                SeenItem.user_id == user_id,
-                SeenItem.platform == platform,
-                SeenItem.status == "FAILED"
-            )
-        )
+        conditions = [
+            SeenItem.user_id == user_id,
+            SeenItem.platform == platform,
+            SeenItem.status == "FAILED"
+        ]
+        if source_profile:
+            clean_target = source_profile.lstrip("@").strip().lower()
+            conditions.append(func.lower(SeenItem.source_profile) == clean_target)
+
+        stmt = select(func.count(SeenItem.id)).where(*conditions)
         result = await session.execute(stmt)
         return result.scalar() or 0
 

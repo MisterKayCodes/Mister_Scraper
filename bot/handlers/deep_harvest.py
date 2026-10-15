@@ -141,9 +141,9 @@ async def cb_deep_harvest_run(callback: types.CallbackQuery):
                         f_mode
                     ))
 
-            pending = await Repository.get_pending_items(session, callback.from_user.id, "x")
-            total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x")
-            total_failed = await Repository.get_failed_count(session, callback.from_user.id, "x")
+            pending = await Repository.get_pending_items(session, callback.from_user.id, "x", source_profile=src.target)
+            total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x", source_profile=src.target)
+            total_failed = await Repository.get_failed_count(session, callback.from_user.id, "x", source_profile=src.target)
 
         summary_text = (
             f"✅ <b>Link Hunter Finished! Browser Closed.</b>\n\n"
@@ -216,9 +216,9 @@ async def cb_deliver_next_now(callback: types.CallbackQuery):
         )
         res = await session.execute(stmt)
         src = res.scalar_one_or_none()
-        remaining = await Repository.get_pending_items(session, callback.from_user.id, "x")
-        total_remaining = await Repository.get_pending_count(session, callback.from_user.id, "x")
-        total_failed = await Repository.get_failed_count(session, callback.from_user.id, "x")
+        remaining = await Repository.get_pending_items(session, callback.from_user.id, "x", source_profile=src.target)
+        total_remaining = await Repository.get_pending_count(session, callback.from_user.id, "x", source_profile=src.target)
+        total_failed = await Repository.get_failed_count(session, callback.from_user.id, "x", source_profile=src.target)
 
     queue_text = format_queue_preview(remaining, src.target, total_count=total_remaining)
     await callback.message.edit_text(
