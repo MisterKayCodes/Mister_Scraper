@@ -60,8 +60,10 @@ def fetch_tweet_metadata(url: str) -> Tuple[Optional[Dict[str, Any]], Optional[s
 
 def _normalize_fxtwitter_payload(tweet: Dict[str, Any], original_url: str) -> Dict[str, Any]:
     """
-    Selects optimal 720p/HD stream for fast Telegram delivery without socket exhaustion.
+    Selects optimal HD stream preserving native aspect ratio (portrait vs landscape)
+    without exceeding safe bandwidth limits.
     """
+    import re
     media_extended = []
     media_obj = tweet.get("media", {})
     
@@ -70,37 +72,55 @@ def _normalize_fxtwitter_payload(tweet: Dict[str, Any], original_url: str) -> Di
     for v in videos:
         chosen_url = v.get("url") # Default fallback
         variants = v.get("variants", [])
-        
-        # Sort variants to find 720p or closest optimal video (around 2-3 Mbps)
-        # Avoid uncompressed 1080p 10Mbps monsters that crash TCP sockets
+        native_w = v.get("width")
+        native_h = v.get("height")
+        duration = v.get("duration", 0)
+
+        is_portrait = False
+        if native_w and native_h:
+            is_portrait = int(native_h) > int(native_w)
+
         mp4_variants = [var for var in variants if var.get("content_type") == "video/mp4"]
+        chosen_w = native_w
+        chosen_h = native_h
+
         if mp4_variants:
             # Sort by bitrate ascending
             mp4_variants.sort(key=lambda x: x.get("bitrate", 0))
             
-            # Prefer variant with bitrate between 1.5 Mbps and 3.5 Mbps (crisp 720p)
             optimal = None
-            for var in mp4_variants:
-                br = var.get("bitrate", 0)
-                if 1_200_000 <= br <= 4_000_000:
-                    optimal = var
-                    break
-            
-            # If no mid-range bitrate found, pick highest under 5 Mbps or middle variant
-            if not optimal:
-                under_5m = [var for var in mp4_variants if var.get("bitrate", 0) <= 5_000_000]
-                if under_5m:
-                    optimal = under_5m[-1]
-                else:
-                    optimal = mp4_variants[0]
+            if is_portrait:
+                # Vertical/Phone video: prefer crisp portrait HD (720x1280 or 1080x1920) up to 5.5 Mbps
+                under_5m = [var for var in mp4_variants if var.get("bitrate", 0) <= 5_500_000]
+                optimal = under_5m[-1] if under_5m else mp4_variants[-1]
+            else:
+                # Landscape video: prefer 720p HD between 1.2M and 4.0M to avoid 1080p upload timeouts
+                for var in mp4_variants:
+                    br = var.get("bitrate", 0)
+                    if 1_200_000 <= br <= 4_000_000:
+                        optimal = var
+                        break
+                if not optimal:
+                    under_5m = [var for var in mp4_variants if var.get("bitrate", 0) <= 5_000_000]
+                    optimal = under_5m[-1] if under_5m else mp4_variants[0]
             
             chosen_url = optimal.get("url", chosen_url)
-            logger.info(f"[EYES] Selected optimal bitrate {optimal.get('bitrate', 0)} bps for video ID {v.get('id')}")
+            
+            # Extract actual stream resolution from URL if available (e.g. /vid/avc1/720x1280/...)
+            res_match = re.search(r'/vid/(?:avc1/)?(\d+)x(\d+)/', chosen_url)
+            if res_match:
+                chosen_w = int(res_match.group(1))
+                chosen_h = int(res_match.group(2))
+                
+            logger.info(f"[EYES] Selected stream {chosen_w}x{chosen_h} @ {optimal.get('bitrate', 0)} bps (portrait={is_portrait}) for video ID {v.get('id')}")
 
         media_extended.append({
             "type": "video",
             "url": chosen_url,
-            "thumbnail_url": v.get("thumbnail_url")
+            "thumbnail_url": v.get("thumbnail_url"),
+            "width": int(chosen_w) if chosen_w else None,
+            "height": int(chosen_h) if chosen_h else None,
+            "duration": int(float(duration)) if duration else 0
         })
 
     # Photos
@@ -108,7 +128,9 @@ def _normalize_fxtwitter_payload(tweet: Dict[str, Any], original_url: str) -> Di
     for p in photos:
         media_extended.append({
             "type": "image",
-            "url": p.get("url")
+            "url": p.get("url"),
+            "width": p.get("width"),
+            "height": p.get("height")
         })
 
     author_obj = tweet.get("author", {})

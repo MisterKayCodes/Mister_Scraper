@@ -45,7 +45,10 @@ async def deliver_media(
             media_type=m_type,
             caption=safe_caption,
             status_msg=status_msg,
-            thumbnail_url=media.get("thumbnail_url")
+            thumbnail_url=media.get("thumbnail_url"),
+            width=media.get("width"),
+            height=media.get("height"),
+            duration=media.get("duration")
         )
         if file_id_or_ok:
             overall_success = True

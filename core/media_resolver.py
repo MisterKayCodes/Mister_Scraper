@@ -26,9 +26,9 @@ def resolve_extension(media_type: str, url: str = "") -> str:
         return "png"
     return "jpg"
 
-def parse_media_list(data: Dict[str, Any]) -> List[Dict[str, str]]:
+def parse_media_list(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Extracts all media items from a vxtwitter JSON payload.
+    Extracts all media items from a vxtwitter/fxtwitter JSON payload with dimensions.
     """
     media_list = []
     
@@ -42,6 +42,12 @@ def parse_media_list(data: Dict[str, Any]) -> List[Dict[str, str]]:
                 entry = {"url": url, "type": m_type}
                 if thumb_url:
                     entry["thumbnail_url"] = thumb_url
+                if item.get("width"):
+                    entry["width"] = int(item["width"])
+                if item.get("height"):
+                    entry["height"] = int(item["height"])
+                if item.get("duration"):
+                    entry["duration"] = int(float(item["duration"]))
                 media_list.append(entry)
                 
     # 2. Check legacy single media_url
@@ -52,6 +58,12 @@ def parse_media_list(data: Dict[str, Any]) -> List[Dict[str, str]]:
         }
         if data.get("thumbnail_url"):
             entry["thumbnail_url"] = data.get("thumbnail_url")
+        if data.get("width"):
+            entry["width"] = int(data["width"])
+        if data.get("height"):
+            entry["height"] = int(data["height"])
+        if data.get("duration"):
+            entry["duration"] = int(float(data["duration"]))
         media_list.append(entry)
     return media_list
 

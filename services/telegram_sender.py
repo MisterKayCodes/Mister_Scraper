@@ -20,6 +20,9 @@ async def send_media_resilient(
     caption: str,
     status_msg: Optional[types.Message] = None,
     thumbnail_url: Optional[str] = None,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    duration: Optional[int] = None,
     max_retries: int = 2
 ) -> str | bool:
     """
@@ -36,7 +39,7 @@ async def send_media_resilient(
     # -------------------------------------------------------------
     # TIER 1: Direct Cloud-to-Cloud Transfer (Telegram downloads URL)
     # -------------------------------------------------------------
-    logger.info(f"[SENDER] Attempting Tier 1 Direct Cloud transfer for {media_url[:60]}...")
+    logger.info(f"[SENDER] Attempting Tier 1 Direct Cloud transfer for {media_url[:60]} (dim={width}x{height})...")
     if status_msg:
         try:
             await status_msg.edit_text("⚡ <i>Fast cloud transfer in progress...</i>", parse_mode="HTML")
@@ -50,6 +53,9 @@ async def send_media_resilient(
                 chat_id=target_chat,
                 video=media_url,
                 caption=caption,
+                width=width,
+                height=height,
+                duration=duration,
                 supports_streaming=True,
                 parse_mode="HTML",
                 request_timeout=90
@@ -144,6 +150,9 @@ async def send_media_resilient(
                     chat_id=target_chat,
                     video=file_input,
                     caption=caption,
+                    width=width,
+                    height=height,
+                    duration=duration,
                     thumbnail=thumb_input,
                     supports_streaming=True,
                     parse_mode="HTML",

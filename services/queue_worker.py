@@ -157,7 +157,10 @@ async def process_queue_item(bot: Bot, item: Tuple) -> None:
                 media_url=m_url,
                 media_type=m_type,
                 caption=safe_caption,
-                thumbnail_url=media.get("thumbnail_url")
+                thumbnail_url=media.get("thumbnail_url"),
+                width=media.get("width"),
+                height=media.get("height"),
+                duration=media.get("duration")
             )
 
             if success:
