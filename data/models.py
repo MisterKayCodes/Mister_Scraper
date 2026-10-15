@@ -24,9 +24,14 @@ class SeenItem(Base):
     __tablename__ = "seen_items"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(Integer, nullable=True, index=True)         # Binds to HarvestTask.id
     platform = Column(String(32), default="x", index=True)
+    source_profile = Column(String(128), nullable=True, index=True)
     content_id = Column(String(128), nullable=False, index=True) # tweet_id
     user_id = Column(BigInteger, nullable=False, index=True)
+    url = Column(String(512), nullable=True)
+    is_repost = Column(Boolean, default=False)
+    position = Column(Integer, default=0)
     status = Column(String(32), default="DISCOVERED")            # DISCOVERED, COMPLETED, FAILED
     retry_count = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
@@ -43,14 +48,24 @@ class HarvestTask(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, nullable=False, index=True)
-    target = Column(String(128), nullable=False)
+    target = Column(String(128), nullable=False)                 # source_profile e.g. DailyLoud
+    source_profile = Column(String(128), nullable=True)
+    destination_channel_id = Column(String(128), nullable=True)
     platform = Column(String(32), default="x")
-    status = Column(String(32), default="ACTIVE")               # ACTIVE, PAUSED, STOPPED, COMPLETED
+    status = Column(String(32), default="HUNTING")               # HUNTING, DELIVERING, PAUSED, COMPLETED, FAILED
+    total_found = Column(Integer, default=0)
+    delivered_count = Column(Integer, default=0)
+    failed_count = Column(Integer, default=0)
     total_items = Column(Integer, default=0)
     processed_count = Column(Integer, default=0)
     success_count = Column(Integer, default=0)
     last_msg_id = Column(Integer, nullable=True)
+    last_error = Column(Text, nullable=True)
     next_post_time = Column(Integer, default=0)
+    next_post_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    hunt_finished_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

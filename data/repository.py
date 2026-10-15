@@ -158,6 +158,102 @@ class Repository:
             await session.commit()
 
     @staticmethod
+    async def create_harvest_job(
+        session: AsyncSession,
+        user_id: int,
+        source_profile: str,
+        destination_channel_id: str,
+        platform: str = "x"
+    ) -> HarvestTask:
+        """Initializes a new two-phase harvest job (Link Hunter -> Delivery Engine)."""
+        clean_target = source_profile.lstrip("@").strip()
+        task = HarvestTask(
+            user_id=user_id,
+            target=clean_target,
+            source_profile=clean_target,
+            destination_channel_id=destination_channel_id,
+            platform=platform,
+            status="HUNTING",
+            total_found=0,
+            delivered_count=0,
+            failed_count=0
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        return task
+
+    @staticmethod
+    async def bulk_insert_discovered_links(
+        session: AsyncSession,
+        task_id: int,
+        user_id: int,
+        source_profile: str,
+        items: List[dict],
+        platform: str = "x"
+    ) -> int:
+        """
+        Inserts harvested links into seen_items idempotently.
+        Items: [{'id': '198...', 'url': '...', 'is_repost': False, 'position': 1}, ...]
+        Returns count of newly inserted items.
+        """
+        from datetime import datetime
+        clean_target = source_profile.lstrip("@").strip()
+        new_count = 0
+
+        for it in items:
+            tid = str(it.get("id"))
+            # Check duplicate
+            stmt = select(SeenItem).where(
+                SeenItem.user_id == user_id,
+                SeenItem.platform == platform,
+                SeenItem.content_id == tid
+            )
+            res = await session.execute(stmt)
+            existing = res.scalar_one_or_none()
+            if not existing:
+                item = SeenItem(
+                    task_id=task_id,
+                    user_id=user_id,
+                    platform=platform,
+                    source_profile=clean_target,
+                    content_id=tid,
+                    url=it.get("url") or f"https://x.com/{clean_target}/status/{tid}",
+                    is_repost=it.get("is_repost", False),
+                    position=it.get("position", 0),
+                    status="DISCOVERED"
+                )
+                session.add(item)
+                new_count += 1
+
+        if new_count > 0:
+            stmt_task = select(HarvestTask).where(HarvestTask.id == task_id)
+            res_task = await session.execute(stmt_task)
+            t = res_task.scalar_one_or_none()
+            if t:
+                t.total_found = (t.total_found or 0) + new_count
+                t.total_items = t.total_found
+
+        await session.commit()
+        return new_count
+
+    @staticmethod
+    async def get_next_harvest_item(session: AsyncSession, task_id: int) -> Optional[SeenItem]:
+        """Fetches the next queued item for delivery ordered oldest-to-newest by Snowflake ID."""
+        from sqlalchemy import cast, BigInteger
+        stmt = (
+            select(SeenItem)
+            .where(
+                SeenItem.task_id == task_id,
+                SeenItem.status.in_(["DISCOVERED", "PENDING"])
+            )
+            .order_by(cast(SeenItem.content_id, BigInteger).asc())
+            .limit(1)
+        )
+        res = await session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    @staticmethod
     async def create_task(session: AsyncSession, user_id: int, target: str, platform: str = "x") -> HarvestTask:
         task = HarvestTask(user_id=user_id, target=target, platform=platform)
         session.add(task)

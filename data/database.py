@@ -39,5 +39,39 @@ async def init_db():
                 connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN clean_caption TEXT NULL")
             if "updated_at" not in seen_cols:
                 connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN updated_at TIMESTAMP NULL")
+            if "task_id" not in seen_cols:
+                connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN task_id INTEGER NULL")
+            if "source_profile" not in seen_cols:
+                connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN source_profile VARCHAR(128) NULL")
+            if "url" not in seen_cols:
+                connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN url VARCHAR(512) NULL")
+            if "is_repost" not in seen_cols:
+                connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN is_repost BOOLEAN DEFAULT 0")
+            if "position" not in seen_cols:
+                connection.exec_driver_sql("ALTER TABLE seen_items ADD COLUMN position INTEGER DEFAULT 0")
+
+            # harvest_tasks migrations
+            ht_res = connection.exec_driver_sql("PRAGMA table_info(harvest_tasks)").fetchall()
+            ht_cols = [r[1] for r in ht_res]
+            if "source_profile" not in ht_cols:
+                connection.exec_driver_sql("ALTER TABLE harvest_tasks ADD COLUMN source_profile VARCHAR(128) NULL")
+            if "destination_channel_id" not in ht_cols:
+                connection.exec_driver_sql("ALTER TABLE harvest_tasks ADD COLUMN destination_channel_id VARCHAR(128) NULL")
+            if "total_found" not in ht_cols:
+                connection.exec_driver_sql("ALTER TABLE harvest_tasks ADD COLUMN total_found INTEGER DEFAULT 0")
+            if "delivered_count" not in ht_cols:
+                connection.exec_driver_sql("ALTER TABLE harvest_tasks ADD COLUMN delivered_count INTEGER DEFAULT 0")
+            if "failed_count" not in ht_cols:
+                connection.exec_driver_sql("ALTER TABLE harvest_tasks ADD COLUMN failed_count INTEGER DEFAULT 0")
+            if "last_error" not in ht_cols:
+                connection.exec_driver_sql("ALTER TABLE harvest_tasks ADD COLUMN last_error TEXT NULL")
+            if "next_post_at" not in ht_cols:
+                connection.exec_driver_sql("ALTER TABLE harvest_tasks ADD COLUMN next_post_at TIMESTAMP NULL")
+            if "started_at" not in ht_cols:
+                connection.exec_driver_sql("ALTER TABLE harvest_tasks ADD COLUMN started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            if "hunt_finished_at" not in ht_cols:
+                connection.exec_driver_sql("ALTER TABLE harvest_tasks ADD COLUMN hunt_finished_at TIMESTAMP NULL")
+            if "finished_at" not in ht_cols:
+                connection.exec_driver_sql("ALTER TABLE harvest_tasks ADD COLUMN finished_at TIMESTAMP NULL")
 
         await conn.run_sync(run_migrations)

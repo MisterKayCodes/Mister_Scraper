@@ -37,15 +37,22 @@ def parse_media_list(data: Dict[str, Any]) -> List[Dict[str, str]]:
         for item in data["media_extended"]:
             url = item.get("url")
             m_type = item.get("type", "image")
+            thumb_url = item.get("thumbnail_url")
             if url:
-                media_list.append({"url": url, "type": m_type})
+                entry = {"url": url, "type": m_type}
+                if thumb_url:
+                    entry["thumbnail_url"] = thumb_url
+                media_list.append(entry)
                 
     # 2. Check legacy single media_url
     elif "media_url" in data and data["media_url"]:
-        media_list.append({
+        entry = {
             "url": data["media_url"],
             "type": "video" if data.get("hasVideo") else "image"
-        })
+        }
+        if data.get("thumbnail_url"):
+            entry["thumbnail_url"] = data.get("thumbnail_url")
+        media_list.append(entry)
     return media_list
 
 def extract_x_username(input_str: str) -> str:
