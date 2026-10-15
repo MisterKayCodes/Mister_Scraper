@@ -183,7 +183,9 @@ async def repost_batch_to_channel_from_vault(
             failed_ids.append(tid)
 
         if i < len(tweet_ids) - 1:
-            await asyncio.sleep(1.0)
+            # Dynamic anti-flood pacing: 1.5s for small batches, 4.0s for larger batches (>5)
+            gap = 4.0 if len(tweet_ids) > 5 else 1.5
+            await asyncio.sleep(gap)
 
     return success_count, failed_ids
 
