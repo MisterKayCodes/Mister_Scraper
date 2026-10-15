@@ -20,3 +20,9 @@ Format:
 - Cause: Twitter CDN image URLs were passed directly as URLInputFile (which Twitter blocks from Telegram IPs), and raw image dimensions (1200x675) exceeded Telegram's strict 320x320 thumbnail limit, causing Telegram to silently drop the thumbnail. Furthermore, `supports_streaming=True` was omitted.
 - Fix: Downloaded thumbnail locally, scaled it to max 320x320 JPEG via Pillow, passed it as FSInputFile with `supports_streaming=True`, and implemented `ProgressFSInputFile` to stream live upload percentage chunks to `TelegramProgressTracker`.
 - Verified by: it works the thumbnail works the progress bars work and it uploaded it to the channel as wel when  clicked channel
+
+## NSFW Sensitive Profile Modal Scrape Failure
+- Symptom: Headless Playwright scraper returned 0 items on sensitive/NSFW profiles.
+- Cause: X hydrated the "Yes, view profile" modal after Playwright accessibility role lookup executed, so get_by_role failed to locate the button.
+- Fix: Replaced role lookup with a polling page.evaluate loop that queries button elements by innerText directly in the DOM and calls click().
+- Verified by: the nsfw oe worked yes
