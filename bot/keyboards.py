@@ -46,6 +46,19 @@ def get_interval_selection_kb() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="❌ Cancel", callback_data="sync_cancel"))
     return builder.as_markup()
 
+def get_sources_selector_kb(sources: list) -> InlineKeyboardMarkup:
+    """Renders a clean list of linked sources as inline buttons for easy selection."""
+    builder = InlineKeyboardBuilder()
+    for src in sources:
+        status_icon = "🟢" if src.is_active else "⏸️"
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{status_icon} @{src.target} ➔ {src.destination_channel_id}",
+                callback_data=f"src_view:{src.id}"
+            )
+        )
+    return builder.as_markup()
+
 def get_source_item_kb(source_id: int, is_active: bool, has_pending: bool = False) -> InlineKeyboardMarkup:
     """Controls for a single linked source pair: instant Fast Refresh, Stealth Check Now, and Deliver Next."""
     builder = InlineKeyboardBuilder()

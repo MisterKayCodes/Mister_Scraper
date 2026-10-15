@@ -165,13 +165,24 @@ async def scrape_profile_media(
                     return []
 
                 # Bypass NSFW "Sensitive Content" warning if present
-                await asyncio.sleep(2)
-                for btn_text in ["Yes, view profile", "View", "Yes"]:
-                    nsfw_btn = page.get_by_role("button", name=btn_text)
-                    if await nsfw_btn.count() > 0:
-                        await nsfw_btn.first.click()
+                for _ in range(8):
+                    dismissed = await page.evaluate('''() => {
+                        const btns = Array.from(document.querySelectorAll('button'));
+                        for (const b of btns) {
+                            const txt = (b.innerText || '').toLowerCase();
+                            if (txt.includes('yes, view profile') || txt.includes('view profile') || txt === 'yes') {
+                                b.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }''')
+                    if dismissed:
+                        if status_callback:
+                            await status_callback("🔓 Bypassed NSFW sensitive profile warning.")
                         await asyncio.sleep(2)
                         break
+                    await asyncio.sleep(0.8)
 
                 # Continuous Link Hunter: incremental extraction on every scroll step
                 # Extracts status IDs from article[data-testid="tweet"] to capture 100% of posts AND reposts

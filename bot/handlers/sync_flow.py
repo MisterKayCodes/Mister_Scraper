@@ -188,17 +188,47 @@ async def btn_active_sources(message: types.Message, state: FSMContext):
         )
         return
 
-    await message.answer(f"📋 <b>Your Active Sources ({len(sources)}):</b>\nManage your cloning pipelines below:", parse_mode="HTML")
-
-    for src in sources:
-        async with AsyncSessionLocal() as session:
-            pending = await Repository.get_pending_items(session, message.from_user.id, "x")
-        queue_text = format_queue_preview(pending, src.target)
+    if len(sources) > 1:
+        from bot.keyboards import get_sources_selector_kb
         await message.answer(
-            format_source_diagnostic_card(src) + queue_text,
-            reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=len(pending) > 0),
+            f"📋 <b>Your Active Sources ({len(sources)}):</b>\n"
+            "Tap a source below to manage its cloning pipeline, check queue, or Deep Harvest:",
+            reply_markup=get_sources_selector_kb(sources),
             parse_mode="HTML"
         )
+    else:
+        await message.answer(f"📋 <b>Your Active Sources ({len(sources)}):</b>\nManage your cloning pipelines below:", parse_mode="HTML")
+        for src in sources:
+            async with AsyncSessionLocal() as session:
+                pending = await Repository.get_pending_items(session, message.from_user.id, "x")
+            queue_text = format_queue_preview(pending, src.target)
+            await message.answer(
+                format_source_diagnostic_card(src) + queue_text,
+                reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=len(pending) > 0),
+                parse_mode="HTML"
+            )
+
+@router.callback_query(F.data.startswith("src_view:"))
+async def cb_view_source(callback: types.CallbackQuery):
+    """Opens the detailed diagnostic card when a source is selected from the inline list."""
+    source_id = int(callback.data.split(":")[1])
+    async with AsyncSessionLocal() as session:
+        stmt = select(ScheduledSource).where(ScheduledSource.id == source_id, ScheduledSource.user_id == callback.from_user.id)
+        res = await session.execute(stmt)
+        src = res.scalar_one_or_none()
+        pending = await Repository.get_pending_items(session, callback.from_user.id, "x")
+
+    if not src:
+        await callback.answer("Source not found.", show_alert=True)
+        return
+
+    await callback.answer()
+    queue_text = format_queue_preview(pending, src.target)
+    await callback.message.edit_text(
+        format_source_diagnostic_card(src) + queue_text,
+        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=len(pending) > 0),
+        parse_mode="HTML"
+    )
 
 @router.callback_query(F.data.startswith("src_refresh:"))
 async def cb_refresh_source(callback: types.CallbackQuery):
