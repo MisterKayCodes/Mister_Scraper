@@ -32,3 +32,10 @@ Format:
 - Cause: `conveyor_queue` was an in-memory `asyncio.Queue` wiped on process termination; no rehydration mechanism queried `seen_items` in `DISCOVERED` state at startup.
 - Fix: Added `rehydrate_conveyor_queue()` at bot boot and on worker batch drain, with in-flight ID deduplication.
 - Verified by: it posted one from goddessofporno just now
+
+## Cross-Source Diagnostic Contamination and Zombie Pending Post Discrepancy
+- Symptom: Diagnostic card showed inconsistent queue counts (e.g. 5 pending in preview header vs 2 in status, or inflated counts across sources).
+- Cause: `get_pending_items` and `get_pending_count` lacked a `source_profile` filter, aggregating all sources globally; furthermore, text-only tweets with no downloadable media remained indefinitely stuck in `DISCOVERED` status as zombie pending records.
+- Fix: Scoped pending/failed repository queries strictly to `source_profile == src.target` and marked text-only/no-media items as `COMPLETED` (`media_type="none"`) in the database.
+- Verified by: and btw the 2 inconsistent queued numbers in scraper feed is consistent now
+
