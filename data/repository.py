@@ -58,6 +58,36 @@ class Repository:
         return item
 
     @staticmethod
+    async def get_pending_items(session: AsyncSession, user_id: int, platform: str = "x", limit: int = 10) -> List[SeenItem]:
+        """Fetch discovered/pending items that have not yet been marked completed or failed."""
+        stmt = (
+            select(SeenItem)
+            .where(
+                SeenItem.user_id == user_id,
+                SeenItem.platform == platform,
+                SeenItem.status.in_(["DISCOVERED", "PENDING", "QUEUED"])
+            )
+            .order_by(SeenItem.created_at.asc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def get_pending_count(session: AsyncSession, user_id: int, platform: str = "x") -> int:
+        from sqlalchemy import func
+        stmt = (
+            select(func.count(SeenItem.id))
+            .where(
+                SeenItem.user_id == user_id,
+                SeenItem.platform == platform,
+                SeenItem.status.in_(["DISCOVERED", "PENDING", "QUEUED"])
+            )
+        )
+        result = await session.execute(stmt)
+        return result.scalar() or 0
+
+    @staticmethod
     async def mark_as_completed(
         session: AsyncSession,
         user_id: int,

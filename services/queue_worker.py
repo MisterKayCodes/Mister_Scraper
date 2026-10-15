@@ -15,10 +15,32 @@ from .downloader import download_file
 
 from loguru import logger
 
+import time
+from datetime import datetime, timedelta
+from aiogram.exceptions import TelegramRetryAfter
+from core.time_utils import now_wat
+
 # Global Conveyor Belt Queue
 # Queue items: Tuple[tweet_url: str, user_id: int, task_id: int, destination_channel: str, custom_signature: str, filter_mode: int]
 conveyor_queue = asyncio.Queue()
 _is_first_post = True
+
+# Global Rate Limit Tracker for UI & Worker coordination
+rate_limit_state = {
+    "is_limited": False,
+    "retry_after": 0,
+    "free_at": None,
+    "last_error": None
+}
+
+def get_rate_limit_status() -> dict:
+    """Returns current rate limit state for diagnostic cards."""
+    if rate_limit_state["is_limited"] and rate_limit_state["free_at"]:
+        now = now_wat()
+        if now >= rate_limit_state["free_at"]:
+            rate_limit_state["is_limited"] = False
+            rate_limit_state["free_at"] = None
+    return rate_limit_state
 
 async def process_queue_item(bot: Bot, item: Tuple) -> None:
     """Processes a single media item from the conveyor belt."""
@@ -80,12 +102,22 @@ async def process_queue_item(bot: Bot, item: Tuple) -> None:
                     await Repository.update_source_stats(session, source_id=task_id, last_error=err_msg)
 
 async def conveyor_worker(bot: Bot) -> None:
-    """Continuous background worker with human anti-ban jitter."""
+    """Continuous background worker with human anti-ban jitter & 429 auto-wait."""
     global _is_first_post
     logger.info("[CONVEYOR] Background worker started.")
     while True:
         item = await conveyor_queue.get()
         try:
+            # Check if currently under Telegram 429 cooldown
+            if rate_limit_state["is_limited"] and rate_limit_state["free_at"]:
+                now = now_wat()
+                if now < rate_limit_state["free_at"]:
+                    remaining_wait = (rate_limit_state["free_at"] - now).total_seconds()
+                    logger.warning(f"[CONVEYOR] Still in Telegram cooldown. Sleeping remaining {remaining_wait:.1f}s...")
+                    await asyncio.sleep(remaining_wait)
+                rate_limit_state["is_limited"] = False
+                rate_limit_state["free_at"] = None
+
             # First item in batch: 1-5s for instant feedback
             # Subsequent items: 45-90s to protect Telegram channel
             if _is_first_post:
@@ -97,6 +129,22 @@ async def conveyor_worker(bot: Bot) -> None:
             logger.info(f"[CONVEYOR] Pacing next item. Sleeping for {jitter:.1f}s jitter...")
             await asyncio.sleep(jitter)
             await process_queue_item(bot, item)
+
+        except TelegramRetryAfter as rate_err:
+            wait_seconds = rate_err.retry_after + 15
+            free_time = now_wat() + timedelta(seconds=wait_seconds)
+            rate_limit_state["is_limited"] = True
+            rate_limit_state["retry_after"] = wait_seconds
+            rate_limit_state["free_at"] = free_time
+            rate_limit_state["last_error"] = f"Telegram 429: Rate limited for {wait_seconds}s"
+            
+            logger.warning(f"[CONVEYOR] ⚠️ Telegram 429 encountered! Auto-waiting {wait_seconds}s (retry_after={rate_err.retry_after} + 15s buffer). Free at {free_time.strftime('%H:%M:%S')}")
+            
+            # Put item back at front of queue to not lose it
+            await conveyor_queue.put(item)
+            await asyncio.sleep(wait_seconds)
+            rate_limit_state["is_limited"] = False
+
         except Exception as e:
             logger.error(f"[CONVEYOR] Worker error: {e}")
         finally:

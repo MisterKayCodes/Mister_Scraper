@@ -46,32 +46,56 @@ def get_interval_selection_kb() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="❌ Cancel", callback_data="sync_cancel"))
     return builder.as_markup()
 
-def get_source_item_kb(source_id: int, is_active: bool) -> InlineKeyboardMarkup:
-    """Controls for a single linked source pair with instant Check Now trigger."""
+def get_source_item_kb(source_id: int, is_active: bool, has_pending: bool = False) -> InlineKeyboardMarkup:
+    """Controls for a single linked source pair: instant Fast Refresh, Stealth Check Now, and Deliver Next."""
     builder = InlineKeyboardBuilder()
     toggle_text = "⏸️ Pause Feed" if is_active else "▶️ Resume Feed"
+    
+    # Row 1: Fast Refresh vs Deep Scan
+    builder.row(
+        InlineKeyboardButton(text="🔄 Refresh", callback_data=f"src_refresh:{source_id}"),
+        InlineKeyboardButton(text="⚡ Check Now", callback_data=f"src_check:{source_id}")
+    )
+    
+    # Row 2: Deliver Next (if pending posts exist)
+    if has_pending:
+        builder.row(
+            InlineKeyboardButton(text="▶️ Deliver Next Now", callback_data=f"src_deliver_next:{source_id}")
+        )
+
+    # Row 3: Pause and Delete
     builder.row(
         InlineKeyboardButton(text=toggle_text, callback_data=f"src_toggle:{source_id}"),
-        InlineKeyboardButton(text="🔄 Check Now", callback_data=f"src_check:{source_id}")
+        InlineKeyboardButton(text="🗑️ Unlink Source", callback_data=f"src_del:{source_id}")
     )
-    builder.row(InlineKeyboardButton(text="🗑️ Unlink Source", callback_data=f"src_del:{source_id}"))
     return builder.as_markup()
 
-def get_delivery_action_deck_kb(author: str = "", content_id: str = "", has_channel: bool = False) -> InlineKeyboardMarkup:
+def get_delivery_action_deck_kb(
+    author: str = "",
+    content_id: str = "",
+    batch_key: str = "",
+    batch_count: int = 0,
+    has_channel: bool = False
+) -> InlineKeyboardMarkup:
     """Action deck attached to successful deliveries for instant, frictionless follow-up."""
     builder = InlineKeyboardBuilder()
     
     # Primary CTA: Grab another link
     builder.row(InlineKeyboardButton(text="⚡ Grab Another Link", callback_data="qg_next"))
     
-    secondary_row = []
-    if has_channel and content_id:
-        secondary_row.append(InlineKeyboardButton(text="📢 Post to Channel", callback_data=f"qg_repost:{content_id}"))
+    if has_channel:
+        if batch_key and batch_count > 1:
+            builder.row(
+                InlineKeyboardButton(text=f"📢 Post All ({batch_count}) to Channel", callback_data=f"qg_b_all:{batch_key}"),
+                InlineKeyboardButton(text="🧪 Test 1 to Channel", callback_data=f"qg_b_test:{batch_key}")
+            )
+        elif content_id:
+            builder.row(InlineKeyboardButton(text="📢 Post to Channel", callback_data=f"qg_repost:{content_id}"))
+
     if author:
-        secondary_row.append(InlineKeyboardButton(text=f"🔄 Auto-Sync @{author}", callback_data=f"qg_sync_author:{author}"))
-        
-    if secondary_row:
-        builder.row(*secondary_row)
+        builder.row(InlineKeyboardButton(text=f"🔄 Auto-Sync @{author}", callback_data=f"qg_sync_author:{author}"))
         
     return builder.as_markup()
+
+
 

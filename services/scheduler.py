@@ -42,7 +42,10 @@ async def run_scheduler_loop() -> None:
                         logger.info(f"[SCHEDULER] Scanned @{src.target}: found {len(links)} candidate links.")
                         queued_count = 0
 
-                        for link in links:
+                        # Reverse links: deliver oldest to newest so channel narrative is chronological
+                        chronological_links = list(reversed(links))
+
+                        for link in chronological_links:
                             tweet_id = link.split("?")[0].rstrip("/").split("/")[-1]
                             # Check dedup: skip if already COMPLETED
                             if not await Repository.is_duplicate(session, src.user_id, "x", tweet_id):

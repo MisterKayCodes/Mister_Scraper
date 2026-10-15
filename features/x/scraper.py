@@ -5,7 +5,10 @@ import json
 from pathlib import Path
 from typing import List, Callable, Awaitable, Optional
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth
+try:
+    from playwright_stealth import stealth_async
+except ImportError:
+    stealth_async = None
 import config
 
 # Resource Guard: Only one headless Chromium runs at a time (VPS memory protection)
@@ -25,13 +28,11 @@ async def scrape_profile_media(
     if username.startswith("@"):
         username = username[1:]
 
-    # Select target URL & expected GraphQL endpoint
-    if mode == "timeline":
-        url = f"https://x.com/{username}"
-        graphql_key = "UserTweets"
-    else:
-        url = f"https://x.com/{username}/media"
-        graphql_key = "UserMedia"
+    # Always scrape the timeline (profile root) — X no longer fires UserMedia GraphQL
+    # on authenticated sessions navigating to /media. DOM extraction from the main
+    # timeline is the proven working approach.
+    url = f"https://x.com/{username}"
+    graphql_key = "UserTweets"  # Bonus: catch any GraphQL that fires too
 
     intercepted_tweet_ids = set()
     links = []
@@ -42,6 +43,33 @@ async def scrape_profile_media(
     async with browser_semaphore:
         async with async_playwright() as p:
             cookie_path = config.DATA_DIR / "cookies.json"
+
+            # Auto-generate cookies.json from .env if missing but tokens provided
+            if not cookie_path.exists() and config.X_AUTH_TOKEN:
+                c_list = [
+                    {
+                        "name": "auth_token",
+                        "value": config.X_AUTH_TOKEN,
+                        "domain": ".x.com",
+                        "path": "/",
+                        "httpOnly": True,
+                        "secure": True,
+                        "sameSite": "None"
+                    }
+                ]
+                if config.X_CT0:
+                    c_list.append({
+                        "name": "ct0",
+                        "value": config.X_CT0,
+                        "domain": ".x.com",
+                        "path": "/",
+                        "httpOnly": False,
+                        "secure": True,
+                        "sameSite": "Lax"
+                    })
+                with open(cookie_path, "w", encoding="utf-8") as f:
+                    json.dump({"cookies": c_list, "origins": []}, f)
+
             has_cookies = cookie_path.exists()
 
             # Sanitize cookies if present
@@ -102,7 +130,8 @@ async def scrape_profile_media(
 
             # Apply anti-bot stealth mask
             try:
-                await stealth(page)
+                if stealth_async:
+                    await stealth_async(page)
             except Exception:
                 pass
 
@@ -145,16 +174,34 @@ async def scrape_profile_media(
                         break
 
                 # Scroll to tease lazy-loaded content
-                for i in range(8):
-                    if len(intercepted_tweet_ids) >= limit:
-                        break
+                for i in range(4):
                     if status_callback:
-                        await status_callback(f"🔄 Scanning media feed ({len(intercepted_tweet_ids)} found)...")
-                    
+                        await status_callback(f"🔄 Scanning feed... ({len(intercepted_tweet_ids)} via GraphQL so far)")
                     await page.mouse.move(random.randint(100, 600), random.randint(100, 600))
                     await asyncio.sleep(0.3)
-                    await page.evaluate("window.scrollBy(0, 1000)")
-                    await asyncio.sleep(random.uniform(1.5, 3.0))
+                    await page.evaluate("window.scrollBy(0, 1200)")
+                    await asyncio.sleep(random.uniform(1.5, 2.5))
+
+                # Primary: DOM extraction — pull all status links rendered on the page
+                if status_callback:
+                    await status_callback("🔎 Extracting post links from DOM...")
+                try:
+                    dom_hrefs = await page.evaluate('''() => {
+                        return Array.from(document.querySelectorAll('a[href*="/status/"]')).map(a => a.href);
+                    }''')
+                    for href in dom_hrefs:
+                        base = href.split('?')[0].rstrip('/')
+                        if f'/{username.lower()}/' in base.lower() and '/status/' in base:
+                            if not any(x in base for x in ['/photo/', '/video/', '/analytics']):
+                                tid = base.split('/status/')[-1]
+                                if tid.isdigit() and len(tid) > 10:
+                                    intercepted_tweet_ids.add(tid)
+                except Exception as dom_err:
+                    if status_callback:
+                        await status_callback(f"⚠️ DOM extraction error: {dom_err}")
+
+                if status_callback:
+                    await status_callback(f"✅ Found {len(intercepted_tweet_ids)} unique posts")
 
                 for tid in intercepted_tweet_ids:
                     links.append(f"https://x.com/{username}/status/{tid}")

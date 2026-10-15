@@ -29,8 +29,11 @@ DATABASE_URL = f"sqlite+aiosqlite:///{DB_PATH}"
 
 # External APIs
 VX_TWITTER_API = "https://api.vxtwitter.com"
+X_AUTH_TOKEN = os.getenv("X_AUTH_TOKEN", "")
+X_CT0 = os.getenv("X_CT0", "")
 
 # Network Headers (mimics standard modern browser)
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
+

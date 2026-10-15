@@ -160,3 +160,30 @@ async def repost_to_channel_from_vault(
     except Exception as e:
         logger.error(f"[REPOST] Error forwarding to channel: {e}")
         return False, f"❌ Failed to forward to channel: {e}"
+
+
+async def repost_batch_to_channel_from_vault(
+    bot: Bot,
+    user_id: int,
+    tweet_ids: List[str],
+    channel_id: str
+) -> Tuple[int, List[str]]:
+    """
+    Forwards multiple items from Vault to channel sequentially with 1s gap.
+    Returns (success_count, failed_ids).
+    """
+    success_count = 0
+    failed_ids = []
+
+    for i, tid in enumerate(tweet_ids):
+        ok, _ = await repost_to_channel_from_vault(bot, user_id, tid, channel_id)
+        if ok:
+            success_count += 1
+        else:
+            failed_ids.append(tid)
+
+        if i < len(tweet_ids) - 1:
+            await asyncio.sleep(1.0)
+
+    return success_count, failed_ids
+
