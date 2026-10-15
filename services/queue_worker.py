@@ -2,7 +2,7 @@ import asyncio
 import random
 import html
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional
 from aiogram import Bot, types
 
 import config
