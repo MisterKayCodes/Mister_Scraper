@@ -122,6 +122,8 @@ def format_source_diagnostic_card(src) -> str:
         hrs = src.interval_minutes / 60
         interval_display = f"{int(hrs) if hrs.is_integer() else hrs} hours"
 
+    error_display = f"<code>{src.last_error}</code>" if src.last_error and src.last_error != "None (Healthy)" else "None (Healthy) 🟢"
+
     from services.queue_worker import get_rate_limit_status
     rl_status = get_rate_limit_status()
     if rl_status.get("is_limited") and rl_status.get("free_at"):
