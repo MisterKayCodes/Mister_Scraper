@@ -9,6 +9,7 @@ try:
     from playwright_stealth import stealth_async
 except ImportError:
     stealth_async = None
+from loguru import logger
 import config
 
 # Resource Guard: Only one headless Chromium runs at a time (VPS memory protection)
@@ -164,6 +165,8 @@ async def scrape_profile_media(
 
                 # Check redirect to login
                 if "/login" in page.url or "/i/flow/" in page.url:
+                    logger.warning(f"[RADAR] X redirected to login page for @{username}. Cookies are expired or missing.")
+                    logger.info("[RADAR] Cannot scrape without valid session. Returning empty — no crash, no data loss.")
                     if status_callback:
                         await status_callback("⚠️ Session cookies required for this profile. Diverted to login.")
                     return []
@@ -232,6 +235,7 @@ async def scrape_profile_media(
                     scroll_count += 1
 
                     # 1. Incremental Harvest: Extract visible tweets on THIS scroll step
+                    dom_yield_count = 0
                     try:
                         visible_posts = await page.evaluate(EXTRACT_TIMELINE_JS, username.lower())
                         new_batch_count = 0
@@ -240,6 +244,7 @@ async def scrape_profile_media(
                             if tid in intercepted_tweet_ids:
                                 continue
                             intercepted_tweet_ids.add(tid)
+                            dom_yield_count += 1
 
                             if tid in already_seen:
                                 skipped_seen_count += 1
@@ -251,6 +256,7 @@ async def scrape_profile_media(
                                 break
                     except Exception as harvest_err:
                         new_batch_count = 0
+                        dom_yield_count = 0
 
                     if status_callback and (new_batch_count > 0 or skipped_seen_count > 0):
                         if already_seen:
@@ -271,12 +277,15 @@ async def scrape_profile_media(
                     scroll_stalled = abs(metrics["scrollY"] - last_scroll_y) < 10
                     last_scroll_y = metrics["scrollY"]
 
-                    if new_batch_count == 0 and (is_at_bottom or scroll_stalled):
+                    # True feed stall only occurs if the DOM yielded 0 posts (seen or unseen) and page cannot move
+                    if dom_yield_count == 0 and (is_at_bottom or scroll_stalled):
                         stale_strikes += 1
+                        logger.warning(f"[RADAR] DOM yielded 0 posts this scroll (Strike {stale_strikes}/{max_stale_strikes}). Timeline may be exhausted.")
                         if status_callback:
                             await status_callback(f"⚠️ Feed stalled (Strike {stale_strikes}/{max_stale_strikes})...")
 
                         if stale_strikes == 2:
+                            logger.info("[RADAR] Strike 2 — executing rescue nudge (scroll up then down) to unstick X virtual scroll...")
                             # Rescue nudge: scroll UP 350px, wait, scroll DOWN 700px
                             await page.mouse.wheel(0, -350)
                             await asyncio.sleep(1.2)
@@ -285,6 +294,7 @@ async def scrape_profile_media(
                             continue
 
                         if stale_strikes >= max_stale_strikes:
+                            logger.info(f"[RADAR] End of scrollable feed confirmed. Collected {len(links)} posts. Exiting scroll loop cleanly.")
                             if status_callback:
                                 await status_callback(f"🏁 End of feed reached ({len(links)} posts captured).")
                             break
@@ -304,8 +314,11 @@ async def scrape_profile_media(
 
                 if status_callback:
                     await status_callback(f"✅ Hunter Complete: Collected {len(links)} posts.")
+                logger.info(f"[RADAR] Playwright scroll finished for @{username}: gathered {len(links)}/{limit} posts (skipped {skipped_seen_count} historical).")
 
             except Exception as e:
+                logger.error(f"[RADAR] Playwright session encountered an error for @{username}: {e}")
+                logger.info("[RADAR] Closing browser safely. Returning partial collected posts without crashing.")
                 if status_callback:
                     await status_callback(f"❌ Scan error: {str(e)}")
             finally:

@@ -135,13 +135,13 @@ async def process_queue_item(bot: Bot, item: Tuple) -> None:
         # Check deduplication first
         async with AsyncSessionLocal() as session:
             if await Repository.is_duplicate(session, user_id, "x", tweet_id):
-                print(f"[CONVEYOR] Skipped duplicate tweet: {tweet_id}")
+                logger.info(f"[CONVEYOR] Duplicate detected ({tweet_id}) — already in Vault. Skipping cleanly.")
                 return
 
         # Extract metadata using XAdapter
         scraped = await asyncio.to_thread(XAdapter.get_single_post, url)
         if not scraped or not scraped.media_list:
-            logger.info(f"[CONVEYOR] No media found in {url} (text-only or empty). Clearing from pending queue.")
+            logger.info(f"[CONVEYOR] Post {tweet_id} is text-only — no downloadable media. Marking COMPLETED to clear queue slot.")
             async with AsyncSessionLocal() as session:
                 await Repository.mark_as_completed(session, user_id, "x", tweet_id, media_type="none")
             return
@@ -185,7 +185,8 @@ async def process_queue_item(bot: Bot, item: Tuple) -> None:
                 logger.info(f"[CONVEYOR] Successfully delivered {tweet_id} to {destination_channel}")
             else:
                 err_msg = f"Delivery failed for {m_url[:50]}"
-                logger.error(f"[CONVEYOR] {err_msg}")
+                logger.error(f"[CONVEYOR] Delivery failed for {tweet_id}: {m_url[:50]}")
+                logger.warning("[CONVEYOR] Item marked FAILED in DB. Queue advances to next post — pipeline continues.")
                 async with AsyncSessionLocal() as session:
                     await Repository.mark_as_failed(session, user_id, "x", tweet_id, err_msg)
                     if task_id:

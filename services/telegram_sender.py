@@ -79,7 +79,8 @@ async def send_media_resilient(
         return file_id or "SUCCESS"
 
     except Exception as tier1_err:
-        logger.warning(f"[SENDER] Tier 1 Cloud transfer failed ({tier1_err}). Dropping to Tier 2 Local Upload...")
+        logger.warning(f"[SENDER] Tier 1 rejected by Telegram: {tier1_err}")
+        logger.info("[SENDER] Tier 1 failed — not a crash. Activating Tier 2 local download + upload fallback...")
 
     # -------------------------------------------------------------
     # TIER 2: Local Atomic Download + Multi-part Upload with Retries & Live Progress
@@ -113,7 +114,8 @@ async def send_media_resilient(
     )
 
     if not download_ok or not local_path.exists():
-        logger.error(f"[SENDER] Tier 2 Download failed for {media_url}")
+        logger.error(f"[SENDER] Download failed for media — X CDN unreachable or URL expired: {media_url[:60]}")
+        logger.warning("[SENDER] Cannot proceed without local file. Marking item as failed and releasing queue slot.")
         return False
 
     # Calculate dynamic timeout based on file size (minimum 600s, + 25s per MB)
@@ -125,7 +127,8 @@ async def send_media_resilient(
     # PRE-FLIGHT GUARD & AUTO-COMPRESSION (Telegram Bot API 50MB Limit)
     # -------------------------------------------------------------
     if is_video and file_size_mb >= 49.0:
-        logger.warning(f"[SENDER] Video {local_path.name} is {file_size_mb:.2f} MB (>= 49 MB). Engaging auto-compression...")
+        logger.warning(f"[SENDER] Video is oversized: {file_size_mb:.2f} MB — Telegram Bot API hard limit is 50 MB.")
+        logger.info("[SENDER] Activating auto-compression (target: 42 MB). Bot will recover and deliver this post.")
         if status_msg:
             try:
                 await status_msg.edit_text("⚙️ <i>Video exceeds 50MB. Compressing to fit Telegram limit...</i>", parse_mode="HTML")
@@ -169,16 +172,19 @@ async def send_media_resilient(
 
             if proc.returncode == 0 and compressed_path.exists():
                 comp_size_mb = compressed_path.stat().st_size / (1024 * 1024)
-                logger.info(f"[SENDER] Compressed {file_size_mb:.2f} MB -> {comp_size_mb:.2f} MB successfully.")
                 if comp_size_mb < 49.5:
+                    logger.info(f"[SENDER] Compression OK: {file_size_mb:.2f} MB → {comp_size_mb:.2f} MB. Proceeding to upload.")
                     local_path = compressed_path
                     file_size_mb = comp_size_mb
                 else:
-                    logger.warning(f"[SENDER] Compressed size still oversized: {comp_size_mb:.2f} MB")
+                    logger.warning(f"[SENDER] Compression could not bring file below 49.5 MB (result: {comp_size_mb:.2f} MB).")
+                    logger.info("[SENDER] Escalating to Option A Fallback: posting link button so channel still gets content.")
             else:
                 logger.warning(f"[SENDER] ffmpeg exited with returncode {proc.returncode}")
+                logger.info("[SENDER] Compression did not produce valid output. Checking if Option A Fallback can salvage delivery...")
         except Exception as comp_err:
-            logger.error(f"[SENDER] Auto-compression failed: {comp_err}")
+            logger.error(f"[SENDER] Auto-compression threw an exception: {comp_err}")
+            logger.info("[SENDER] Compression unavailable. Checking if Option A Fallback can salvage delivery...")
 
     # If still > 49.5 MB after compression attempt, activate Option A: Fallback Link Button
     if is_video and file_size_mb >= 49.5:
@@ -283,6 +289,7 @@ async def send_media_resilient(
         except Exception as upload_err:
             logger.warning(f"[SENDER] Upload attempt {attempt}/{max_retries} failed: {upload_err}")
             if attempt < max_retries:
+                logger.info(f"[SENDER] Retrying in 3s — bot is still alive, attempt {attempt + 1} incoming...")
                 if status_msg:
                     try:
                         await status_msg.edit_text(
@@ -293,7 +300,7 @@ async def send_media_resilient(
                         pass
                 await asyncio.sleep(3)
             else:
-                logger.error(f"[SENDER] Tier 2 All {max_retries} upload attempts failed for {target_chat}")
+                logger.error(f"[SENDER] All {max_retries} upload attempts exhausted. Item will be marked FAILED in DB.")
 
         finally:
             pass
