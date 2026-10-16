@@ -107,3 +107,39 @@ def extract_status_urls(text: str) -> List[str]:
             cleaned.append(base)
     return cleaned
 
+
+def sanitize_telegram_channel(input_str: str) -> str:
+    """
+    Sanitizes Telegram channel input so it's always valid for the Bot API:
+    - 'https://t.me/MyChannel' -> '@MyChannel'
+    - 't.me/MyChannel' -> '@MyChannel'
+    - 't.me/joinchat/...' or '+...' -> preserved if link, but warn
+    - '@MyChannel' -> '@MyChannel'
+    - '-100123456789' -> '-100123456789'
+    - 'MyChannel' -> '@MyChannel'
+    """
+    cleaned = input_str.strip()
+    
+    # Check numeric chat ID (e.g. -100123456789 or 123456789)
+    if (cleaned.startswith("-") and cleaned[1:].isdigit()) or cleaned.isdigit():
+        return cleaned
+
+    # Strip web URL prefixes
+    for prefix in ["https://t.me/", "http://t.me/", "t.me/"]:
+        if cleaned.lower().startswith(prefix):
+            cleaned = cleaned[len(prefix):]
+            break
+
+    # Clean query params or trailing slashes
+    cleaned = cleaned.split("?")[0].rstrip("/")
+
+    # If it's a join link (starts with '+' or 'joinchat/'), keep as is
+    if cleaned.startswith("+") or cleaned.startswith("joinchat/"):
+        return cleaned
+
+    # Ensure public channels start with @
+    if not cleaned.startswith("@"):
+        cleaned = f"@{cleaned}"
+
+    return cleaned
+

@@ -79,6 +79,9 @@ async def rehydrate_conveyor_queue() -> int:
             if not dest_channel:
                 continue
 
+            from core.media_resolver import sanitize_telegram_channel
+            dest_channel = sanitize_telegram_channel(dest_channel)
+
             url = item.url or f"https://x.com/{item.source_profile or 'i'}/status/{tid}"
             _in_flight_ids.add(tid)
             await conveyor_queue.put((url, item.user_id, source_id, dest_channel, sig, f_mode))

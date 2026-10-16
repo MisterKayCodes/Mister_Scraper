@@ -40,16 +40,31 @@ async def cb_set_channel(callback: types.CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
+from core.media_resolver import sanitize_telegram_channel
+
 @router.message(SetupStates.waiting_for_channel)
 async def process_channel_input(message: types.Message, state: FSMContext):
-    channel_id = message.text.strip()
+    raw_channel = message.text.strip()
+    channel_id = sanitize_telegram_channel(raw_channel)
     await state.clear()
+
+    # Pre-flight check: Verify bot can access the chat
+    bot = message.bot
+    channel_title = channel_id
+    try:
+        chat = await bot.get_chat(channel_id)
+        if chat and chat.title:
+            channel_title = f"{chat.title} ({channel_id})"
+    except Exception as chat_err:
+        logger.warning(f"[SETTINGS] Pre-flight check warning for {channel_id}: {chat_err}")
 
     async with AsyncSessionLocal() as session:
         await Repository.update_settings(session, message.from_user.id, destination_channel_id=channel_id)
 
     await message.answer(
-        f"✅ <b>Destination Channel Saved:</b> <code>{channel_id}</code>\n\n"
+        f"✅ <b>Destination Channel Saved:</b> <code>{channel_id}</code>\n"
+        f"📢 <b>Channel:</b> <i>{channel_title}</i>\n\n"
+        "💡 <i>Make sure this bot is an Admin in the channel with post permissions.</i>\n\n"
         "Type /start to return to the Command Center.",
         parse_mode="HTML"
     )
