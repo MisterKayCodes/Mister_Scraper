@@ -172,7 +172,7 @@ async def scrape_profile_media(
                     return []
 
                 # Bypass NSFW "Sensitive Content" warning if present
-                for _ in range(8):
+                for attempt in range(16):
                     dismissed = await page.evaluate('''() => {
                         const btns = Array.from(document.querySelectorAll('button'));
                         for (const b of btns) {
@@ -185,9 +185,14 @@ async def scrape_profile_media(
                         return false;
                     }''')
                     if dismissed:
+                        logger.info(f"[RADAR] Bypassed NSFW sensitive profile modal on attempt {attempt + 1}.")
                         if status_callback:
-                            await status_callback("🔓 Bypassed NSFW sensitive profile warning.")
-                        await asyncio.sleep(2)
+                            await status_callback("🔓 Bypassed NSFW sensitive profile warning. Loading timeline...")
+                        # Wait for timeline posts to hydrate into the DOM after dismissing warning
+                        try:
+                            await page.wait_for_selector('article[data-testid="tweet"]', timeout=8000)
+                        except Exception:
+                            await asyncio.sleep(3.5)
                         break
                     await asyncio.sleep(0.8)
 
