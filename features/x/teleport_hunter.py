@@ -108,9 +108,8 @@ async def attempt_teleport_harvest(
             if status_callback:
                 await status_callback(f"⚡ Fast-Forward: Teleporting past {seen_count} historical posts (until {cutoff_date})...")
 
-            import urllib.parse
-            encoded_query = urllib.parse.quote(f"(from:{username}) until:{cutoff_date}")
-            search_url = f"https://x.com/search?q={encoded_query}&f=live"
+            search_query = f"(from:{username}) until:{cutoff_date}"
+            search_url = f"https://x.com/search?q={search_query}&f=live"
 
             await page.goto(search_url, wait_until="domcontentloaded", timeout=45000)
             await asyncio.sleep(3.5)
