@@ -231,6 +231,30 @@ async def scrape_profile_media(
                 }
                 '''
 
+                # Optional: Detachable Hybrid Fast-Forward (Search Anchor & Turbo Skim)
+                if getattr(config, "ENABLE_TELEPORT_HARVEST", False) and already_seen:
+                    try:
+                        from features.x.teleport_hunter import attempt_teleport_harvest
+                        fast_links = await attempt_teleport_harvest(
+                            page=page,
+                            username=username,
+                            limit=limit,
+                            exclude_ids=already_seen,
+                            status_callback=status_callback
+                        )
+                        for fl in fast_links:
+                            tid = fl.split("?")[0].rstrip("/").split("/")[-1]
+                            if tid not in intercepted_tweet_ids:
+                                intercepted_tweet_ids.add(tid)
+                                links.append(fl)
+                        if len(links) >= limit:
+                            logger.info(f"[RADAR] Fast-forward satisfied target ({len(links)}/{limit}). Skipping standard scroll.")
+                            if status_callback:
+                                await status_callback(f"✅ Hunter Complete: Collected {len(links)} posts.")
+                            return links[:limit]
+                    except Exception as tf_err:
+                        logger.warning(f"[RADAR] Fast-forward encounter ({tf_err}). Auto-falling back seamlessly to standard scroll.")
+
                 stale_strikes = 0
                 max_stale_strikes = 3
                 last_scroll_y = await page.evaluate("() => window.scrollY")
