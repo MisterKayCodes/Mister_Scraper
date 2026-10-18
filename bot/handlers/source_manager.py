@@ -13,6 +13,7 @@ from data.repository import Repository
 from data.models import ScheduledSource
 from bot.keyboards import get_source_item_kb, get_sources_selector_kb
 from bot.helpers.card_formatters import format_source_diagnostic_card, format_queue_preview
+from features.x.exceptions import PageNeverLoaded, AccountUnavailable, SessionExpired
 
 router = Router(name="source_manager_router")
 
@@ -216,6 +217,27 @@ async def cb_check_source_now(callback: types.CallbackQuery):
                     parse_mode="HTML"
                 )
 
+    except PageNeverLoaded as pnl_err:
+        logger.error(f"[CHECK_NOW] Blank page error for @{src.target}: {pnl_err}")
+        await callback.message.edit_text(
+            format_source_diagnostic_card(src) + f"\n\n⚠️ <b>Unable to load posts:</b> X timeline didn't render after 3 attempts.\nPlease try again in a few minutes.",
+            reply_markup=get_source_item_kb(src.id, src.is_active),
+            parse_mode="HTML"
+        )
+    except AccountUnavailable as acc_err:
+        logger.warning(f"[CHECK_NOW] Account unavailable @{src.target}: {acc_err}")
+        await callback.message.edit_text(
+            format_source_diagnostic_card(src) + f"\n\n❌ <b>Account Unavailable:</b> {acc_err}",
+            reply_markup=get_source_item_kb(src.id, src.is_active),
+            parse_mode="HTML"
+        )
+    except SessionExpired as sess_err:
+        logger.error(f"[CHECK_NOW] Session expired: {sess_err}")
+        await callback.message.edit_text(
+            format_source_diagnostic_card(src) + f"\n\n🔐 <b>Session Expired:</b> X login cookies are invalid or expired. Please refresh cookies.",
+            reply_markup=get_source_item_kb(src.id, src.is_active),
+            parse_mode="HTML"
+        )
     except Exception as e:
         logger.error(f"[CHECK_NOW] Error scanning @{src.target}: {e}")
         await callback.message.edit_text(

@@ -15,6 +15,7 @@ from data.repository import Repository
 from data.models import ScheduledSource
 from bot.keyboards import get_source_item_kb, get_deep_harvest_limits_kb
 from bot.helpers.card_formatters import format_source_diagnostic_card, format_queue_preview
+from features.x.exceptions import PageNeverLoaded, AccountUnavailable, SessionExpired
 
 router = Router(name="deep_harvest_router")
 
@@ -169,6 +170,27 @@ async def cb_deep_harvest_run(callback: types.CallbackQuery):
             parse_mode="HTML"
         )
 
+    except PageNeverLoaded as pnl_err:
+        logger.error(f"[DEEP_HARVEST] Blank page error for @{src.target}: {pnl_err}")
+        await callback.message.edit_text(
+            format_source_diagnostic_card(src) + f"\n\n⚠️ <b>Unable to load posts:</b> X timeline didn't render after 3 attempts.\nPlease try again in a few minutes.",
+            reply_markup=get_source_item_kb(src.id, src.is_active),
+            parse_mode="HTML"
+        )
+    except AccountUnavailable as acc_err:
+        logger.warning(f"[DEEP_HARVEST] Account unavailable @{src.target}: {acc_err}")
+        await callback.message.edit_text(
+            format_source_diagnostic_card(src) + f"\n\n❌ <b>Account Unavailable:</b> {acc_err}",
+            reply_markup=get_source_item_kb(src.id, src.is_active),
+            parse_mode="HTML"
+        )
+    except SessionExpired as sess_err:
+        logger.error(f"[DEEP_HARVEST] Session expired: {sess_err}")
+        await callback.message.edit_text(
+            format_source_diagnostic_card(src) + f"\n\n🔐 <b>Session Expired:</b> X login cookies are invalid or expired. Please refresh cookies.",
+            reply_markup=get_source_item_kb(src.id, src.is_active),
+            parse_mode="HTML"
+        )
     except Exception as hunt_err:
         logger.error(f"[DEEP_HARVEST] Error: {hunt_err}")
         await callback.message.edit_text(

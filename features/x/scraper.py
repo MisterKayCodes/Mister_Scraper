@@ -2,6 +2,7 @@ import asyncio
 import random
 import re
 import json
+import time
 from pathlib import Path
 from typing import List, Callable, Awaitable, Optional
 from playwright.async_api import async_playwright
@@ -11,9 +12,140 @@ except ImportError:
     stealth_async = None
 from loguru import logger
 import config
+from .exceptions import ScraperException, PageNeverLoaded, AccountUnavailable, SessionExpired
 
 # Resource Guard: Only one headless Chromium runs at a time (VPS memory protection)
 browser_semaphore = asyncio.Semaphore(1)
+
+def _read_mem_info() -> dict:
+    info = {}
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if "MemAvailable:" in line or "SwapFree:" in line or "MemTotal:" in line:
+                    k, v = line.split(":", 1)
+                    info[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return info
+
+def _prune_old_dumps(directory: Path, pattern: str, keep: int = 5):
+    try:
+        files = sorted(directory.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old_file in files[keep:]:
+            old_file.unlink(missing_ok=True)
+    except Exception as e:
+        logger.debug(f"[RADAR] Error pruning dumps: {e}")
+
+async def _create_browser_tab(browser, has_cookies: bool, cookie_path: Path, intercepted_ids: set):
+    """Helper that creates a new browser context, applies stealth and configures listeners."""
+    context_args = {
+        "user_agent": config.DEFAULT_HEADERS["User-Agent"],
+        "viewport": {"width": 1280, "height": 720}
+    }
+    if has_cookies:
+        context_args["storage_state"] = str(cookie_path)
+
+    context = await browser.new_context(**context_args)
+    page = await context.new_page()
+
+    if stealth_async:
+        try:
+            await stealth_async(page)
+        except Exception:
+            pass
+
+    def on_response(response):
+        if "/graphql/" in response.url and "UserTweets" in response.url:
+            logger.info(f"[RADAR] GraphQL UserTweets response: status={response.status} url={response.url[:90]}...")
+
+    def on_request_failed(request):
+        if "/graphql/" in request.url and "UserTweets" in request.url:
+            logger.warning(f"[RADAR] GraphQL UserTweets request failed: {request.failure} url={request.url[:90]}...")
+
+    page.on("response", on_response)
+    page.on("requestfailed", on_request_failed)
+
+    async def capture_graphql_body(response):
+        if "/graphql/" in response.url and "UserTweets" in response.url:
+            try:
+                body = await response.text()
+                found = re.findall(r'"rest_id":"(\d+)"', body)
+                found += re.findall(r'"conversation_id_str":"(\d+)"', body)
+                found += re.findall(r'https://(?:twitter|x)\.com/[^/]+/status/(\d+)', body)
+                for tid in found:
+                    if tid.isdigit() and len(tid) > 10:
+                        intercepted_ids.add(tid)
+            except Exception:
+                pass
+
+    page.on("response", capture_graphql_body)
+    return context, page
+
+async def _check_empty_account_state(page) -> Optional[str]:
+    """
+    Checks if the profile is legitimately empty, suspended, non-existent or protected.
+    Checks both standard and curly apostrophes, and both 'tweets' and 'posts'.
+    """
+    try:
+        body_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+        text_lower = body_text.lower()
+
+        # Check page title first
+        title = (await page.title()).lower()
+        if "page not found" in title:
+            return "This page or account does not exist"
+
+        if "account suspended" in text_lower:
+            return "Account suspended"
+
+        if ("this account doesn't exist" in text_lower or "this account doesn’t exist" in text_lower or
+            "this page doesn't exist" in text_lower or "this page doesn’t exist" in text_lower):
+            return "This account does not exist"
+
+        if "these posts are protected" in text_lower or "these tweets are protected" in text_lower:
+            return "These posts are protected"
+
+        if ("hasn't posted" in text_lower or "hasn’t posted" in text_lower or
+            "hasn't tweeted" in text_lower or "hasn’t tweeted" in text_lower):
+            return "User has not published any posts"
+
+    except Exception:
+        pass
+    return None
+
+async def _dismiss_nsfw_modal_if_present(page, status_callback) -> bool:
+    """
+    Dismisses sensitive content warning if present.
+    Exits early if timeline articles already appeared (e.g. non-NSFW profile).
+    """
+    for attempt in range(16):
+        has_tweets = await page.evaluate("() => document.querySelector('article[data-testid=\"tweet\"]') !== null")
+        if has_tweets:
+            return False
+
+        dismissed = await page.evaluate('''() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            for (const b of btns) {
+                const txt = (b.innerText || '').toLowerCase();
+                if (txt.includes('yes, view profile') || txt.includes('view profile') || txt === 'yes') {
+                    b.click();
+                    return true;
+                }
+            }
+            return false;
+        }''')
+        if dismissed:
+            logger.info(f"[RADAR] Bypassed NSFW sensitive profile modal on attempt {attempt + 1}.")
+            if status_callback:
+                await status_callback("🔓 Bypassed NSFW sensitive profile warning. Loading timeline...")
+            try:
+                await page.wait_for_selector('article[data-testid="tweet"]', timeout=8000)
+            except Exception:
+                await asyncio.sleep(2.0)
+            return True
+        await asyncio.sleep(0.8)
+    return False
 
 async def scrape_profile_media(
     username: str,
@@ -35,6 +167,10 @@ async def scrape_profile_media(
     # on authenticated sessions navigating to /media. DOM extraction from the main
     # timeline is the proven working approach.
     url = f"https://x.com/{username}"
+    mem_start = _read_mem_info()
+    if mem_start:
+        logger.info(f"[RADAR] Scrape start host memory: {mem_start}")
+
     graphql_key = "UserTweets"  # Bonus: catch any GraphQL that fires too
 
     intercepted_tweet_ids = set()
@@ -119,82 +255,98 @@ async def scrape_profile_media(
                     ]
                 )
             except Exception as e:
+                logger.error(f"[RADAR] Browser launch failed: {e}")
                 if status_callback:
                     await status_callback(f"❌ Browser launch error: {str(e)}")
-                return []
+                raise PageNeverLoaded(f"Browser launch failed: {e}") from e
 
-            context_args = {
-                "user_agent": config.DEFAULT_HEADERS["User-Agent"],
-                "viewport": {"width": 1280, "height": 720}
-            }
-            if has_cookies:
-                context_args["storage_state"] = str(cookie_path)
-
-            context = await browser.new_context(**context_args)
-            page = await context.new_page()
-
-            # Apply anti-bot stealth mask
+            context = None
+            page = None
             try:
-                if stealth_async:
-                    await stealth_async(page)
-            except Exception:
-                pass
+                context, page = await _create_browser_tab(browser, has_cookies, cookie_path, intercepted_tweet_ids)
 
-            # Intercept GraphQL responses
-            async def handle_response(response):
-                if "/graphql/" in response.url and graphql_key in response.url:
+                # ==========================================
+                # Page Hydration & Retry Loop (Up to 3 Attempts in Same Browser)
+                # ==========================================
+                hydrated = False
+                for attempt in range(1, 4):
                     try:
-                        body = await response.text()
-                        found = re.findall(r'"rest_id":"(\d+)"', body)
-                        found += re.findall(r'"conversation_id_str":"(\d+)"', body)
-                        found += re.findall(r'https://(?:twitter|x)\.com/[^/]+/status/(\d+)', body)
+                        if attempt == 1:
+                            if status_callback:
+                                await status_callback(f"🔍 Navigating to @{username}...")
+                            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                        elif attempt == 2:
+                            logger.warning(f"[RADAR] Blank page on attempt 1. Executing page.reload() (attempt 2/3) for @{username}...")
+                            if status_callback:
+                                await status_callback("⚠️ Blank page detected, retrying (2/3)...")
+                            await page.reload(wait_until="domcontentloaded", timeout=60000)
+                        elif attempt == 3:
+                            logger.warning(f"[RADAR] Blank page on attempt 2. Rebuilding fresh context (attempt 3/3) for @{username}...")
+                            if status_callback:
+                                await status_callback("⚠️ Blank page detected, refreshing session (3/3)...")
+                            await context.close()
+                            context, page = await _create_browser_tab(browser, has_cookies, cookie_path, intercepted_tweet_ids)
+                            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
-                        for tid in found:
-                            if tid.isdigit() and len(tid) > 10:
-                                intercepted_tweet_ids.add(tid)
-                    except Exception:
-                        pass
+                        # Check redirect to login
+                        if "/login" in page.url or "/i/flow/" in page.url:
+                            logger.warning(f"[RADAR] X redirected to login page for @{username}. Session expired.")
+                            raise SessionExpired(f"X redirected to login for @{username}. Cookies are expired or missing.")
 
-            page.on("response", handle_response)
+                        # Dismiss NSFW if present (exits early if articles already present)
+                        await _dismiss_nsfw_modal_if_present(page, status_callback)
 
-            if status_callback:
-                await status_callback(f"🔍 Navigating to @{username}...")
-
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-
-                # Check redirect to login
-                if "/login" in page.url or "/i/flow/" in page.url:
-                    logger.warning(f"[RADAR] X redirected to login page for @{username}. Cookies are expired or missing.")
-                    logger.info("[RADAR] Cannot scrape without valid session. Returning empty — no crash, no data loss.")
-                    if status_callback:
-                        await status_callback("⚠️ Session cookies required for this profile. Diverted to login.")
-                    return []
-
-                # Bypass NSFW "Sensitive Content" warning if present
-                for attempt in range(16):
-                    dismissed = await page.evaluate('''() => {
-                        const btns = Array.from(document.querySelectorAll('button'));
-                        for (const b of btns) {
-                            const txt = (b.innerText || '').toLowerCase();
-                            if (txt.includes('yes, view profile') || txt.includes('view profile') || txt === 'yes') {
-                                b.click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    }''')
-                    if dismissed:
-                        logger.info(f"[RADAR] Bypassed NSFW sensitive profile modal on attempt {attempt + 1}.")
-                        if status_callback:
-                            await status_callback("🔓 Bypassed NSFW sensitive profile warning. Loading timeline...")
-                        # Wait for timeline posts to hydrate into the DOM after dismissing warning
+                        # Wait up to 15s for articles to hydrate
                         try:
-                            await page.wait_for_selector('article[data-testid="tweet"]', timeout=8000)
+                            await page.wait_for_selector('article[data-testid="tweet"]', timeout=15000)
                         except Exception:
-                            await asyncio.sleep(3.5)
-                        break
-                    await asyncio.sleep(0.8)
+                            pass
+
+                        # Collect attempt diagnostics
+                        article_count = await page.evaluate("() => document.querySelectorAll('article[data-testid=\"tweet\"]').length")
+                        page_title = await page.title()
+                        logger.info(f"[RADAR] Attempt {attempt}/3 diagnostics: articles={article_count}, title='{page_title}', url='{page.url}'")
+
+                        if article_count > 0:
+                            hydrated = True
+                            break
+
+                        # Check legitimate empty / unavailable state — never retry if so
+                        empty_reason = await _check_empty_account_state(page)
+                        if empty_reason:
+                            logger.warning(f"[RADAR] Account @{username} unavailable or empty: {empty_reason}")
+                            raise AccountUnavailable(f"Account @{username} is unavailable: {empty_reason}")
+
+                    except ScraperException:
+                        raise
+                    except Exception as attempt_err:
+                        logger.warning(f"[RADAR] Attempt {attempt}/3 encountered navigation/hydration error: {attempt_err}")
+                        if attempt == 3:
+                            break
+                        continue
+
+                # If still 0 articles after 3 attempts, save diagnostic evidence and raise PageNeverLoaded
+                if not hydrated:
+                    mem_fail = _read_mem_info()
+                    logger.error(f"[RADAR] Failed to hydrate timeline for @{username} after 3 attempts. Memory on failure: {mem_fail}")
+
+                    scratch_dir = config.BASE_DIR / "scratch"
+                    scratch_dir.mkdir(exist_ok=True)
+                    ts = int(time.time())
+                    html_dump_path = scratch_dir / f"blank_page_{username}_{ts}.html"
+                    png_dump_path = scratch_dir / f"blank_page_{username}_{ts}.png"
+
+                    try:
+                        content = await page.content()
+                        html_dump_path.write_text(content, encoding="utf-8")
+                        await page.screenshot(path=str(png_dump_path), full_page=True)
+                        logger.info(f"[RADAR] Saved failure dumps to {html_dump_path} and {png_dump_path}")
+                        _prune_old_dumps(scratch_dir, "blank_page_*.html", keep=5)
+                        _prune_old_dumps(scratch_dir, "blank_page_*.png", keep=5)
+                    except Exception as dump_err:
+                        logger.debug(f"[RADAR] Failed saving failure dump: {dump_err}")
+
+                    raise PageNeverLoaded(f"Timeline for @{username} never loaded (0 posts in DOM after 3 attempts)")
 
                 # Continuous Link Hunter: incremental extraction on every scroll step
                 # Extracts status IDs from article[data-testid="tweet"] to capture 100% of posts AND reposts
@@ -319,14 +471,23 @@ async def scrape_profile_media(
 
                 if status_callback:
                     await status_callback(f"✅ Hunter Complete: Collected {len(links)} posts.")
-                logger.info(f"[RADAR] Playwright scroll finished for @{username}: gathered {len(links)}/{limit} posts (skipped {skipped_seen_count} historical).")
+                if not links and skipped_seen_count == 0:
+                    raise PageNeverLoaded(f"Zero posts harvested and zero historical posts seen for @{username}")
 
+            except ScraperException:
+                raise
             except Exception as e:
                 logger.error(f"[RADAR] Playwright session encountered an error for @{username}: {e}")
-                logger.info("[RADAR] Closing browser safely. Returning partial collected posts without crashing.")
                 if status_callback:
                     await status_callback(f"❌ Scan error: {str(e)}")
+                if not links and skipped_seen_count == 0:
+                    raise PageNeverLoaded(f"Playwright error during scraping: {e}") from e
             finally:
+                if context:
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
                 await browser.close()
 
     return links[:limit]
