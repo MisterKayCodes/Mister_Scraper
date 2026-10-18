@@ -37,7 +37,7 @@ def _prune_old_dumps(directory: Path, pattern: str, keep: int = 5):
     except Exception as e:
         logger.debug(f"[RADAR] Error pruning dumps: {e}")
 
-async def _create_browser_tab(browser, has_cookies: bool, cookie_path: Path, intercepted_ids: set):
+async def _create_browser_tab(browser, has_cookies: bool, cookie_path: Path):
     """Helper that creates a new browser context, applies stealth and configures listeners."""
     context_args = {
         "user_agent": config.DEFAULT_HEADERS["User-Agent"],
@@ -65,21 +65,6 @@ async def _create_browser_tab(browser, has_cookies: bool, cookie_path: Path, int
 
     page.on("response", on_response)
     page.on("requestfailed", on_request_failed)
-
-    async def capture_graphql_body(response):
-        if "/graphql/" in response.url and "UserTweets" in response.url:
-            try:
-                body = await response.text()
-                found = re.findall(r'"rest_id":"(\d+)"', body)
-                found += re.findall(r'"conversation_id_str":"(\d+)"', body)
-                found += re.findall(r'https://(?:twitter|x)\.com/[^/]+/status/(\d+)', body)
-                for tid in found:
-                    if tid.isdigit() and len(tid) > 10:
-                        intercepted_ids.add(tid)
-            except Exception:
-                pass
-
-    page.on("response", capture_graphql_body)
     return context, page
 
 async def _check_empty_account_state(page) -> Optional[str]:
@@ -263,12 +248,13 @@ async def scrape_profile_media(
             context = None
             page = None
             try:
-                context, page = await _create_browser_tab(browser, has_cookies, cookie_path, intercepted_tweet_ids)
+                context, page = await _create_browser_tab(browser, has_cookies, cookie_path)
 
                 # ==========================================
                 # Page Hydration & Retry Loop (Up to 3 Attempts in Same Browser)
                 # ==========================================
                 hydrated = False
+                initial_articles_loaded = 0
                 for attempt in range(1, 4):
                     try:
                         if attempt == 1:
@@ -276,16 +262,21 @@ async def scrape_profile_media(
                                 await status_callback(f"🔍 Navigating to @{username}...")
                             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                         elif attempt == 2:
-                            logger.warning(f"[RADAR] Blank page on attempt 1. Executing page.reload() (attempt 2/3) for @{username}...")
-                            if status_callback:
-                                await status_callback("⚠️ Blank page detected, retrying (2/3)...")
-                            await page.reload(wait_until="domcontentloaded", timeout=60000)
+                            # Only reload if current page is already on profile URL, else goto(url)
+                            if username.lower() in page.url.lower():
+                                logger.warning(f"[RADAR] Blank page on attempt 1. Executing page.reload() (attempt 2/3) for @{username}...")
+                                if status_callback:
+                                    await status_callback("⚠️ Blank page detected, retrying (2/3)...")
+                                await page.reload(wait_until="domcontentloaded", timeout=60000)
+                            else:
+                                logger.warning(f"[RADAR] Not on profile URL on attempt 1 ({page.url}). Executing page.goto() (attempt 2/3) for @{username}...")
+                                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                         elif attempt == 3:
                             logger.warning(f"[RADAR] Blank page on attempt 2. Rebuilding fresh context (attempt 3/3) for @{username}...")
                             if status_callback:
                                 await status_callback("⚠️ Blank page detected, refreshing session (3/3)...")
                             await context.close()
-                            context, page = await _create_browser_tab(browser, has_cookies, cookie_path, intercepted_tweet_ids)
+                            context, page = await _create_browser_tab(browser, has_cookies, cookie_path)
                             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
                         # Check redirect to login
@@ -308,6 +299,7 @@ async def scrape_profile_media(
                         logger.info(f"[RADAR] Attempt {attempt}/3 diagnostics: articles={article_count}, title='{page_title}', url='{page.url}'")
 
                         if article_count > 0:
+                            initial_articles_loaded = article_count
                             hydrated = True
                             break
 
@@ -471,8 +463,10 @@ async def scrape_profile_media(
 
                 if status_callback:
                     await status_callback(f"✅ Hunter Complete: Collected {len(links)} posts.")
+                logger.info(f"[RADAR] Playwright scroll finished for @{username}: gathered {len(links)}/{limit} posts (skipped {skipped_seen_count} historical).")
+
                 if not links and skipped_seen_count == 0:
-                    raise PageNeverLoaded(f"Zero posts harvested and zero historical posts seen for @{username}")
+                    raise PageNeverLoaded(f"Zero posts harvested and zero historical posts seen for @{username} (articles on load: {initial_articles_loaded})")
 
             except ScraperException:
                 raise
@@ -481,7 +475,7 @@ async def scrape_profile_media(
                 if status_callback:
                     await status_callback(f"❌ Scan error: {str(e)}")
                 if not links and skipped_seen_count == 0:
-                    raise PageNeverLoaded(f"Playwright error during scraping: {e}") from e
+                    raise PageNeverLoaded(f"Playwright error during scraping: {e} (articles on load: {initial_articles_loaded})") from e
             finally:
                 if context:
                     try:

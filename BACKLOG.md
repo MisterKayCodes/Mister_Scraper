@@ -72,6 +72,6 @@
 - [ ] **🚀 Deep Harvest Historical Teleportation / Fast-Forwarding**:
   - Instead of scrolling from top of profile through 100+ historical/already-seen posts step-by-step:
     - **Option A (Date Search Anchor)**: Extract oldest harvested tweet date (`YYYY-MM-DD`) from DB and navigate Playwright directly to `https://x.com/search?q=(from:username) until:YYYY-MM-DD&f=live` to start scrolling instantly where the archive left off.
-    - **Option B (Turbo Skim)**: High-speed wheel scrolling with minimal delays until passing known tweet IDs, then dropping into normal human jitter and media extraction once entering unseen territory.
+    - **Option B (Turbo Skim)**: High-speed wheel scrolling with minimal delays until passing known tweet IDs, then dropping into normal human jitter and media extraction once entering unseen territory. i prefer hybrid (turbo for <50 and deep harvest for >50 )
   - *Keep on hold until V2/staging environment so production scraping pipeline remains 100% stable.*
 
