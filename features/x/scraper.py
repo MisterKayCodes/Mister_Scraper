@@ -247,6 +247,7 @@ async def scrape_profile_media(
 
             context = None
             page = None
+            initial_articles_loaded = 0
             try:
                 context, page = await _create_browser_tab(browser, has_cookies, cookie_path)
 
@@ -254,7 +255,6 @@ async def scrape_profile_media(
                 # Page Hydration & Retry Loop (Up to 3 Attempts in Same Browser)
                 # ==========================================
                 hydrated = False
-                initial_articles_loaded = 0
                 for attempt in range(1, 4):
                     try:
                         if attempt == 1:
@@ -461,12 +461,13 @@ async def scrape_profile_media(
                     else:
                         await asyncio.sleep(random.uniform(1.2, 2.2))
 
-                if status_callback:
-                    await status_callback(f"✅ Hunter Complete: Collected {len(links)} posts.")
                 logger.info(f"[RADAR] Playwright scroll finished for @{username}: gathered {len(links)}/{limit} posts (skipped {skipped_seen_count} historical).")
 
                 if not links and skipped_seen_count == 0:
                     raise PageNeverLoaded(f"Zero posts harvested and zero historical posts seen for @{username} (articles on load: {initial_articles_loaded})")
+
+                if status_callback:
+                    await status_callback(f"✅ Hunter Complete: Collected {len(links)} posts.")
 
             except ScraperException:
                 raise
