@@ -124,10 +124,13 @@ async def _dismiss_nsfw_modal_if_present(page, status_callback) -> bool:
             logger.info(f"[RADAR] Bypassed NSFW sensitive profile modal on attempt {attempt + 1}.")
             if status_callback:
                 await status_callback("🔓 Bypassed NSFW sensitive profile warning. Loading timeline...")
+            # X takes ~15s to hydrate articles after NSFW gate is dismissed.
+            # Probe on 2026-11-04 confirmed: tweets appeared ~15s post-click (8s was too short).
             try:
-                await page.wait_for_selector('article[data-testid="tweet"]', timeout=8000)
+                await page.wait_for_selector('article[data-testid="tweet"]', timeout=25000)
             except Exception:
-                await asyncio.sleep(2.0)
+                logger.warning("[RADAR] Articles still not visible 25s after NSFW dismiss. Giving 5s buffer...")
+                await asyncio.sleep(5.0)
             return True
         await asyncio.sleep(0.8)
     return False
