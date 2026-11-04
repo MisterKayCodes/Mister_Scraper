@@ -60,7 +60,7 @@ async def main():
         # Launch Background Conveyor Worker
         tasks.append(asyncio.create_task(conveyor_worker(bot)))
         # Launch Background Scheduler
-        tasks.append(asyncio.create_task(run_scheduler_loop()))
+        tasks.append(asyncio.create_task(run_scheduler_loop(bot)))
         # Launch Bot Polling
         tasks.append(asyncio.create_task(dp.start_polling(bot)))
         logger.info("Telegram Bot and Background Harvester started.")

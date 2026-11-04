@@ -8,7 +8,42 @@ from loguru import logger
 import config
 from core.media_resolver import resolve_extension
 from services.downloader import download_file
-from services.downloader import download_file
+
+
+async def verify_channel_access(bot: Bot, channel_id: Union[int, str]) -> tuple[bool, str]:
+    """
+    Validates whether the bot has access and administrator rights to post to a channel.
+    Returns (True, "OK") or (False, user_friendly_error_message).
+    """
+    try:
+        chat = await bot.get_chat(channel_id)
+    except Exception as e:
+        err_text = str(e).lower()
+        if "chat not found" in err_text:
+            return False, f"Channel {channel_id} not found. Please verify the ID and invite the bot to the channel."
+        return False, f"Cannot reach channel {channel_id}: {e}"
+
+    try:
+        member = await bot.get_chat_member(chat_id=channel_id, user_id=bot.id)
+        if member.status not in ["administrator", "creator"]:
+            title = getattr(chat, 'title', str(channel_id))
+            return False, (
+                f"Bot is in channel '{title}', but is NOT an Administrator.\n"
+                "👉 Please promote the bot to Administrator with 'Post Messages' permission."
+            )
+
+        if hasattr(member, "can_post_messages") and member.can_post_messages is False:
+            title = getattr(chat, 'title', str(channel_id))
+            return False, (
+                f"Bot is an Administrator in '{title}', but lacks 'Post Messages' permission.\n"
+                "👉 Please enable 'Post Messages' in the bot's administrator permissions."
+            )
+
+        return True, "OK"
+    except Exception as e:
+        title = getattr(chat, 'title', str(channel_id))
+        return False, f"Failed checking bot permissions in channel '{title}': {e}"
+
 from bot.utils.progress import TelegramProgressTracker, ProgressFSInputFile
 
 

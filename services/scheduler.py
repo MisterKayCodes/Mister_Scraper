@@ -14,7 +14,7 @@ from features.x.exceptions import PageNeverLoaded, AccountUnavailable, SessionEx
 # In-memory transient failure tracker: src.id -> count
 _source_failure_counts = {}
 
-async def run_scheduler_loop() -> None:
+async def run_scheduler_loop(bot=None) -> None:
     """
     The Carrier (Scheduler):
     Checks active scheduled sources every 60 seconds.
@@ -33,6 +33,17 @@ async def run_scheduler_loop() -> None:
                     # Check if run interval has elapsed
                     if src.next_check and src.next_check > now:
                         continue
+
+                    if bot and src.destination_channel_id:
+                        from services.telegram_sender import verify_channel_access
+                        is_valid, err_perm = await verify_channel_access(bot, src.destination_channel_id)
+                        if not is_valid:
+                            logger.warning(f"[SCHEDULER] Skipping @{src.target}: {err_perm}")
+                            src.last_error = f"Permission error: {err_perm[:80]}"
+                            src.last_check = now
+                            src.next_check = now + timedelta(minutes=15)
+                            await session.commit()
+                            continue
 
                     print(f"[SCHEDULER] Checking X target @{src.target} for User {src.user_id}...")
 

@@ -52,7 +52,7 @@ async def btn_active_sources(message: types.Message):
             queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
             await message.answer(
                 format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + queue_text,
-                reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
+                reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0, failed_count=total_failed),
                 parse_mode="HTML"
             )
 
@@ -100,7 +100,7 @@ async def cb_view_source(callback: types.CallbackQuery):
     queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
     await callback.message.edit_text(
         format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + queue_text,
-        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0, has_multiple_sources=True),
+        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0, has_multiple_sources=True, failed_count=total_failed),
         parse_mode="HTML"
     )
 
@@ -129,7 +129,7 @@ async def cb_refresh_source(callback: types.CallbackQuery):
     queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
     await callback.message.edit_text(
         format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + queue_text,
-        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
+        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0, failed_count=total_failed),
         parse_mode="HTML"
     )
 
@@ -153,7 +153,7 @@ async def cb_toggle_source(callback: types.CallbackQuery):
     queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
     await callback.message.edit_text(
         format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + queue_text,
-        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
+        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0, failed_count=total_failed),
         parse_mode="HTML"
     )
 
@@ -213,7 +213,7 @@ async def cb_check_source_now(callback: types.CallbackQuery):
                 queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
                 await callback.message.edit_text(
                     format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + result_note + queue_text,
-                    reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0),
+                    reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0, failed_count=total_failed),
                     parse_mode="HTML"
                 )
 
@@ -258,3 +258,51 @@ async def cb_delete_source(callback: types.CallbackQuery):
         await callback.message.edit_text("🗑️ <i>This scraper feed was unlinked.</i>", parse_mode="HTML")
     else:
         await callback.answer("Could not delete source.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("src_retry_failed:"))
+async def cb_retry_failed(callback: types.CallbackQuery):
+    source_id = int(callback.data.split(":")[1])
+    async with AsyncSessionLocal() as session:
+        stmt = select(ScheduledSource).where(
+            ScheduledSource.id == source_id,
+            ScheduledSource.user_id == callback.from_user.id
+        )
+        res = await session.execute(stmt)
+        src = res.scalar_one_or_none()
+
+        if not src:
+            await callback.answer("Source not found.", show_alert=True)
+            return
+
+        # Pre-flight verify channel access before retrying
+        if src.destination_channel_id:
+            from services.telegram_sender import verify_channel_access
+            is_valid, err_msg = await verify_channel_access(callback.bot, src.destination_channel_id)
+            if not is_valid:
+                await callback.answer(f"⚠️ Cannot retry:\n{err_msg}", show_alert=True)
+                return
+
+        retried_count = await Repository.retry_failed_items(
+            session=session,
+            user_id=callback.from_user.id,
+            source_profile=src.target,
+            platform=src.platform or "x"
+        )
+        src.last_error = "None (Healthy)"
+        await session.commit()
+
+        pending = await Repository.get_pending_items(session, callback.from_user.id, "x", source_profile=src.target)
+        total_pending = await Repository.get_pending_count(session, callback.from_user.id, "x", source_profile=src.target)
+        total_failed = await Repository.get_failed_count(session, callback.from_user.id, "x", source_profile=src.target)
+
+    from services.queue_worker import rehydrate_conveyor_queue
+    await rehydrate_conveyor_queue()
+
+    await callback.answer(f"✅ Rescheduled {retried_count} failed posts for delivery!", show_alert=True)
+    queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
+    await callback.message.edit_text(
+        format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + queue_text,
+        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0, failed_count=total_failed),
+        parse_mode="HTML"
+    )

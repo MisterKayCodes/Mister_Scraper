@@ -59,7 +59,7 @@ def get_sources_selector_kb(sources: list) -> InlineKeyboardMarkup:
         )
     return builder.as_markup()
 
-def get_source_item_kb(source_id: int, is_active: bool, has_pending: bool = False, has_multiple_sources: bool = False) -> InlineKeyboardMarkup:
+def get_source_item_kb(source_id: int, is_active: bool, has_pending: bool = False, has_multiple_sources: bool = False, failed_count: int = 0) -> InlineKeyboardMarkup:
     """Controls for a single linked source pair: instant Fast Refresh, Stealth Check Now, and Deliver Next."""
     builder = InlineKeyboardBuilder()
     toggle_text = "⏸️ Pause Feed" if is_active else "▶️ Resume Feed"
@@ -79,6 +79,12 @@ def get_source_item_kb(source_id: int, is_active: bool, has_pending: bool = Fals
     if has_pending:
         builder.row(
             InlineKeyboardButton(text="▶️ Deliver Next Now", callback_data=f"src_deliver_next:{source_id}")
+        )
+
+    # Row 4: Retry Failed (if failed deliveries exist)
+    if failed_count > 0:
+        builder.row(
+            InlineKeyboardButton(text=f"🔄 Retry Failed Deliveries ({failed_count})", callback_data=f"src_retry_failed:{source_id}")
         )
 
     # Row 4: Pause and Delete

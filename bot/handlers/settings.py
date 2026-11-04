@@ -48,15 +48,26 @@ async def process_channel_input(message: types.Message, state: FSMContext):
     channel_id = sanitize_telegram_channel(raw_channel)
     await state.clear()
 
-    # Pre-flight check: Verify bot can access the chat
+    # Pre-flight check: Verify bot can access the chat and is admin with post permissions
     bot = message.bot
+    from services.telegram_sender import verify_channel_access
+    is_valid, perm_msg = await verify_channel_access(bot, channel_id)
+    if not is_valid:
+        await message.answer(
+            f"❌ <b>Destination Channel Setup Blocked:</b>\n\n"
+            f"{perm_msg}\n\n"
+            "Please fix the bot permissions or add it to the channel, then send the Channel ID again:",
+            parse_mode="HTML"
+        )
+        return
+
     channel_title = channel_id
     try:
         chat = await bot.get_chat(channel_id)
         if chat and chat.title:
             channel_title = f"{chat.title} ({channel_id})"
-    except Exception as chat_err:
-        logger.warning(f"[SETTINGS] Pre-flight check warning for {channel_id}: {chat_err}")
+    except Exception:
+        pass
 
     async with AsyncSessionLocal() as session:
         await Repository.update_settings(session, message.from_user.id, destination_channel_id=channel_id)

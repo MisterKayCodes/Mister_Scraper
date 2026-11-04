@@ -159,6 +159,34 @@ class Repository:
         return result.scalar() or 0
 
     @staticmethod
+    async def retry_failed_items(
+        session: AsyncSession,
+        user_id: int,
+        source_profile: str,
+        platform: str = "x"
+    ) -> int:
+        """Resets all FAILED items for a specific source profile back to DISCOVERED."""
+        from sqlalchemy import update, func
+        clean_target = source_profile.lstrip("@").strip().lower()
+        stmt = (
+            update(SeenItem)
+            .where(
+                SeenItem.user_id == user_id,
+                SeenItem.platform == platform,
+                func.lower(SeenItem.source_profile) == clean_target,
+                SeenItem.status == "FAILED"
+            )
+            .values(
+                status="DISCOVERED",
+                error_message=None,
+                retry_count=0
+            )
+        )
+        res = await session.execute(stmt)
+        await session.commit()
+        return res.rowcount or 0
+
+    @staticmethod
     async def get_all_pending_for_rehydration(session: AsyncSession) -> List[SeenItem]:
         """Fetch all discovered/pending items across all sources for queue rehydration on startup or empty queue."""
         stmt = (
