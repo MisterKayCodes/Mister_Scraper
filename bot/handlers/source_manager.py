@@ -5,6 +5,7 @@ Covers: list sources, view card, refresh, toggle pause, manual check now,
         back-to-list navigation, and delete source.
 """
 from aiogram import Router, types, F
+from aiogram.exceptions import TelegramBadRequest
 from loguru import logger
 
 from sqlalchemy import select
@@ -127,11 +128,15 @@ async def cb_refresh_source(callback: types.CallbackQuery):
 
     await callback.answer("🔄 Card refreshed")
     queue_text = format_queue_preview(pending, src.target, total_count=total_pending)
-    await callback.message.edit_text(
-        format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + queue_text,
-        reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0, failed_count=total_failed),
-        parse_mode="HTML"
-    )
+    try:
+        await callback.message.edit_text(
+            format_source_diagnostic_card(src, failed_count=total_failed, pending_count=total_pending) + queue_text,
+            reply_markup=get_source_item_kb(src.id, src.is_active, has_pending=total_pending > 0, failed_count=total_failed),
+            parse_mode="HTML"
+        )
+    except TelegramBadRequest as e:
+        if "not modified" not in str(e).lower():
+            raise
 
 
 @router.callback_query(F.data.startswith("src_toggle:"))
