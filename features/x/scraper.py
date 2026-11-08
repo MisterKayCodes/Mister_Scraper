@@ -290,11 +290,33 @@ async def scrape_profile_media(
                         # Dismiss NSFW if present (exits early if articles already present)
                         await _dismiss_nsfw_modal_if_present(page, status_callback)
 
+                        # Check for and click 'See new posts' / 'Show new posts' dynamic banner
+                        clicked_new_posts = await page.evaluate("""() => {
+                            const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                            for (const b of btns) {
+                                const txt = (b.innerText || '').toLowerCase().trim();
+                                if (txt.includes('see new posts') || txt.includes('show new posts')) {
+                                    b.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }""")
+                        if clicked_new_posts:
+                            logger.info(f"[RADAR] 🖱️ Clicked 'See new posts' banner for @{username}.")
+                            await asyncio.sleep(2.0)
+
                         # Wait up to 15s for articles to hydrate
                         try:
                             await page.wait_for_selector('article[data-testid="tweet"]', timeout=15000)
                         except Exception:
-                            pass
+                            # Virtual DOM kick: small gentle scroll to trigger intersection observers
+                            logger.info(f"[RADAR] 📜 Zero articles after initial wait. Executing 350px micro-scroll to wake virtual DOM for @{username}...")
+                            try:
+                                await page.mouse.wheel(0, 350)
+                                await asyncio.sleep(2.0)
+                            except Exception as scroll_err:
+                                logger.warning(f"[RADAR] Micro-scroll failed for @{username}: {scroll_err}")
 
                         # Collect attempt diagnostics
                         article_count = await page.evaluate("() => document.querySelectorAll('article[data-testid=\"tweet\"]').length")
