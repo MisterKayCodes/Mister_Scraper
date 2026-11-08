@@ -124,13 +124,8 @@ async def _dismiss_nsfw_modal_if_present(page, status_callback) -> bool:
             logger.info(f"[RADAR] Bypassed NSFW sensitive profile modal on attempt {attempt + 1}.")
             if status_callback:
                 await status_callback("🔓 Bypassed NSFW sensitive profile warning. Loading timeline...")
-            # X takes ~15s to hydrate articles after NSFW gate is dismissed.
-            # Probe on 2026-11-04 confirmed: tweets appeared ~15s post-click (8s was too short).
-            try:
-                await page.wait_for_selector('article[data-testid="tweet"]', timeout=25000)
-            except Exception:
-                logger.warning("[RADAR] Articles still not visible 25s after NSFW dismiss. Giving 5s buffer...")
-                await asyncio.sleep(5.0)
+            # Allow DOM a brief 1.5s to react to modal dismissal before caller clears banners and initiates hydration
+            await asyncio.sleep(1.5)
             return True
         await asyncio.sleep(0.8)
     return False
@@ -287,10 +282,10 @@ async def scrape_profile_media(
                             logger.warning(f"[RADAR] X redirected to login page for @{username}. Session expired.")
                             raise SessionExpired(f"X redirected to login for @{username}. Cookies are expired or missing.")
 
-                        # Dismiss NSFW if present (exits early if articles already present)
+                        # 1. Dismiss NSFW modal if present (fast dismissal without blocking)
                         await _dismiss_nsfw_modal_if_present(page, status_callback)
 
-                        # Check for and click 'See new posts' / 'Show new posts' dynamic banner
+                        # 2. Clear sticky 'See new posts' / 'Show new posts' banner immediately
                         clicked_new_posts = await page.evaluate("""() => {
                             const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
                             for (const b of btns) {
@@ -306,17 +301,19 @@ async def scrape_profile_media(
                             logger.info(f"[RADAR] 🖱️ Clicked 'See new posts' banner for @{username}.")
                             await asyncio.sleep(2.0)
 
-                        # Wait up to 15s for articles to hydrate
+                        # 3. Virtual DOM Micro-Scroll: gently move down 350px to awaken Twitter's intersection observer
+                        logger.info(f"[RADAR] 📜 Executing 350px micro-scroll to wake virtual DOM for @{username}...")
                         try:
-                            await page.wait_for_selector('article[data-testid="tweet"]', timeout=15000)
+                            await page.mouse.wheel(0, 350)
+                        except Exception as scroll_err:
+                            logger.warning(f"[RADAR] Micro-scroll failed for @{username}: {scroll_err}")
+
+                        # 4. Patient Hydration Wait: Wait up to 25s for articles to hydrate
+                        logger.info(f"[RADAR] ⏳ Waiting up to 25s for timeline articles to hydrate for @{username}...")
+                        try:
+                            await page.wait_for_selector('article[data-testid="tweet"]', timeout=25000)
                         except Exception:
-                            # Virtual DOM kick: small gentle scroll to trigger intersection observers
-                            logger.info(f"[RADAR] 📜 Zero articles after initial wait. Executing 350px micro-scroll to wake virtual DOM for @{username}...")
-                            try:
-                                await page.mouse.wheel(0, 350)
-                                await asyncio.sleep(2.0)
-                            except Exception as scroll_err:
-                                logger.warning(f"[RADAR] Micro-scroll failed for @{username}: {scroll_err}")
+                            logger.warning(f"[RADAR] Articles not visible after 25s for @{username}. Checking DOM state...")
 
                         # Collect attempt diagnostics
                         article_count = await page.evaluate("() => document.querySelectorAll('article[data-testid=\"tweet\"]').length")
