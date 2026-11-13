@@ -9,6 +9,7 @@ import sys
 
 import config
 from data.database import init_db
+from bot.middlewares import GatekeeperMiddleware
 from bot.handlers import register_all_handlers
 from services.queue_worker import conveyor_worker
 from services.scheduler import run_scheduler_loop
@@ -55,6 +56,12 @@ async def main():
     if config.BOT_TOKEN:
         bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
         dp = Dispatcher()
+
+        # Attach Global Gatekeeper Middleware (Protects all messages & callbacks)
+        gatekeeper = GatekeeperMiddleware()
+        dp.message.outer_middleware(gatekeeper)
+        dp.callback_query.outer_middleware(gatekeeper)
+
         register_all_handlers(dp)
 
         # Launch Background Conveyor Worker
